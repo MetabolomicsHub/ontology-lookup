@@ -253,18 +253,26 @@ def lookup_command(args: argparse.Namespace) -> None:
     from ontology_lookup.service import OntologyLookupService
 
     with OntologyLookupService(db_path=args.db) as svc:
-        if args.command == "get-term":
-            result = svc.get_term(args.ontology, args.accession)
-        elif args.command in ("get-by-exact-label"):
-            result = svc.get_exact_label(args.ontology, args.label)
-        elif args.command in ("free-text-search"):
-            method = svc.search if args.command == "search" else svc.freetext_search
-            result = method(
+        if args.command == "get-term-by-accession":
+            result = svc.get_term_by_accession(args.ontology, args.accession)
+        elif args.command in ("get-term-by-label"):
+            result = svc.get_term_by_exact_label(args.ontology, args.label)
+        elif args.command in ("freetext-search"):
+            result = svc.freetext_search(
                 args.query,
                 args.ontology,
-                parse_parents_arg(args.parent),
-                args.limit,
-                args.offset,
+                parent_curie=parse_parents_arg(args.parent),
+                limit=args.limit,
+                offset=args.offset,
+            )
+        elif args.command in ("search-by-label",):
+            result = svc.search_by_label(
+                label_or_synonym=args.label_or_synonym,
+                ontology=args.ontology,
+                parent_curie=parse_parents_arg(args.parent),
+                search_in_synonyms=args.search_in_synonyms,
+                limit=args.limit,
+                offset=args.offset,
             )
         elif args.command == "curie-to-iri":
             result = svc.find_iri(args.curie, args.ontology)
@@ -513,29 +521,43 @@ def create_parser() -> argparse.ArgumentParser:
         )
 
     term_parser = subparsers.add_parser(
-        "get-term", help="Look up a term by ontology and CURIE or IRI"
+        "get-term-by-accession",
+        help="Look up a term by ontology and CURIE or IRI",
     )
     term_parser.add_argument("--ontology", "-o", required=True, help="Ontology short name")
     term_parser.add_argument("--accession", "-a", required=True, help="Term CURIE or full IRI")
     add_db_argument(term_parser)
-    term_parser.set_defaults(command="get-term")
+    term_parser.set_defaults(command="get-term-by-accession")
 
     label_parser = subparsers.add_parser(
-        "get-by-exact-label",
+        "get-term-by-label",
         help="Look up a term by exact label",
     )
     label_parser.add_argument("--ontology", "-o", required=True, help="Ontology short name")
     label_parser.add_argument("--label", "-l", required=True, help="Exact term label")
     add_db_argument(label_parser)
-    label_parser.set_defaults(command="get-by-exact-label")
+    label_parser.set_defaults(command="get-term-by-label")
 
-    search_parser = subparsers.add_parser("search", help="Full-text search labels and synonyms")
-    search_parser.add_argument("--query", "-q", required=True, help="Search query")
+    search_parser = subparsers.add_parser(
+        "search-by-label",
+        help="Exact match on labels and synonyms",
+    )
+    search_parser.add_argument(
+        "--label-or-synonym",
+        required=True,
+        help="Complete label or synonym to match",
+    )
     search_parser.add_argument(
         "--ontology", "-o", default=None, help="Ontology filter (comma-separated)"
     )
     search_parser.add_argument(
         "--parent", "-p", default=None, help="Parent CURIE filter (comma-separated)"
+    )
+    search_parser.add_argument(
+        "--search-in-synonyms",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Include exact synonym matches (default: enabled)",
     )
     search_parser.add_argument("--limit", "-l", type=int, default=50, help="Maximum results")
     search_parser.add_argument("--offset", type=int, default=0, help="Result offset")
@@ -735,9 +757,9 @@ def main(argv: Optional[List[str]] = None) -> None:
     elif args.command == "freetext-search":
         freetext_search_command(args)
     elif args.command in {
-        "get-term",
-        "get-by-exact-label",
-        "search",
+        "get-term-by-accession",
+        "get-term-by-label",
+        "search-by-label",
         "iri-to-curie",
         "curie-to-iri",
         "search-by-tag",

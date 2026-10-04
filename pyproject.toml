@@ -47,8 +47,3 @@ select = ["E", "F", "W", "I", "UP", "B"]
 ignore = ["UP006", "UP035", "UP007", "UP045"]
 
 fixable = ["ALL"]
-[tool.ruff.lint.flake8-bugbear]
-extend-immutable-calls = ["fastapi.Depends", "fastapi.Query"]
-
-[tool.ruff.lint.isort]
-known-first-party = ["ontology_lookup"]

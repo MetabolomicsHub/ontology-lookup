@@ -13,9 +13,13 @@ class TermRecord(BaseModel):
 
 
 class SearchTermSummary(TermRecord):
-    """Compact summary of a term returned from full-text or exact search queries."""
+    """Compact search result, including the synonym that matched when applicable."""
 
     rank: Optional[float] = None
+    matched_synonym: Optional[str] = Field(
+        default=None,
+        description="Synonym that matched the search query, or null for non-synonym matches",
+    )
 
 
 class TermResponse(TermRecord):

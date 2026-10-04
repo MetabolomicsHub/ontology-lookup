@@ -29,7 +29,7 @@ Designed for biological and scientific ontologies (such as HUPO PSI-MS, EDAM, OB
    - [API Endpoints Reference Table](#api-endpoints-reference-table)
    - [Use Case 1: Term Lookup by CURIE or IRI (Accession)](#use-case-1-term-lookup-by-curie-or-iri-accession)
    - [Use Case 2: Exact Label Match](#use-case-2-exact-label-match)
-   - [Use Case 3: Full-Text Search across Labels and Synonyms](#use-case-3-full-text-search-across-labels-and-synonyms)
+   - [Use Case 3: Exact Match Search across Labels and Synonyms](#use-case-3-exact-match-search-across-labels-and-synonyms)
    - [Use Case 4: Hierarchy-Constrained Search (Parent CURIE Filter)](#use-case-4-hierarchy-constrained-search-parent-curie-filter)
    - [Use Case 5: CURIE and IRI Resolution](#use-case-5-curie-and-iri-resolution)
    - [Use Case 6: Key-Value Metadata Tag Search](#use-case-6-key-value-metadata-tag-search)
@@ -561,11 +561,13 @@ Interactive OpenAPI documentation and Swagger UI will be available at:
 | `/terms/{accession}/tags/{tag_key}` | `DELETE` | `accession` (path), `tag_key` (path), `tag_value` (opt query) | Delete one or all tags matching key for a term |
 | `/ontologies/{ontology}/terms/{accession}` | `GET` | `ontology` (path), `accession` (path) | Scoped lookup within explicit ontology |
 | `/search/exact` | `GET` | `ontology`, `label` | Exact match lookup on term label |
-| `/search` | `GET` | `q`, repeatable `ontology` and `parent_curie`, `limit`, `offset` | Full-text search across labels and synonyms |
+| `/search` | `GET` | `q`, `search_in_synonyms`, repeatable `ontology` and `parent_curie`, `limit`, `offset` | Case-insensitive exact match on labels or synonyms |
 | `/search/freetext` | `GET` | `q`, repeatable `ontology` and `parent_curie`, `limit`, `offset` | Ranked freetext search across labels, synonyms, and definitions |
 | `/search/tags` | `GET` | `tag_key`, `tag_value`, `ontology` (opt), `limit`, `offset` | Search terms by metadata tags (e.g. `is_leaf`, `obsolete`) |
-| `/resolve/curie` | `GET` | `iri`, `ontology` | Resolve a full IRI back to its primary CURIE |
+| `/resolve/curie` | `GET` | `iri`, `ontology` (opt) | Resolve a full IRI back to its primary CURIE |
+| `/resolve/iri` | `GET` | `curie`, `ontology` (opt) | Resolve a CURIE to its IRI |
 | `/children/{parent_curie}` | `GET` | `parent_curie` (path), `ontology` (opt), `limit`, `offset` | Get all recursive descendants of a parent CURIE |
+| `/parent-terms` | `GET` | *None* | List parent CURIEs referenced by indexed `child-of` tags |
 | `/ontologies` | `GET` | *None* | List installed ontologies with version, terms, obsoletes, and details |
 | `/ontologies/{ontology}` | `GET` | `ontology` (path) | Get metadata for a specific installed ontology |
 | `/ontologies/{ontology}` | `POST` / `PUT` | `ontology` (path), `source_dir` (opt), `source_file` (opt) | Add or update an ontology from source JSON |
@@ -586,14 +588,14 @@ Fetch the complete record for a term, including aggregated synonyms, hierarchy l
 
 ```bash
 # Example 1: Lookup by CURIE
-uv run ontology-lookup get-term --ontology ms --accession MS:1000031 --db .db/ontology_lookup.db
+uv run ontology-lookup get-term-by-accession --ontology ms --accession MS:1000031 --db .db/ontology_lookup.db
 
 # Example 2: Lookup by lowercase CURIE (case-insensitive)
-uv run ontology-lookup get-term --ontology ms --accession ms:1000449 --db .db/ontology_lookup.db
+uv run ontology-lookup get-term-by-accession --ontology ms --accession ms:1000449 --db .db/ontology_lookup.db
 
 # Example 3: Lookup cross-referenced term in distinct ontologies
-uv run ontology-lookup get-term --ontology ms --accession OBI:0200114 --db .db/ontology_lookup.db
-uv run ontology-lookup get-term --ontology obi --accession OBI:0200114 --db .db/ontology_lookup.db
+uv run ontology-lookup get-term-by-accession --ontology ms --accession OBI:0200114 --db .db/ontology_lookup.db
+uv run ontology-lookup get-term-by-accession --ontology obi --accession OBI:0200114 --db .db/ontology_lookup.db
 ```
 
 #### API Examples
@@ -603,16 +605,16 @@ from ontology_lookup.service import OntologyLookupService
 
 with OntologyLookupService(db_path=".db/ontology_lookup.db") as svc:
     # Example 1: Lookup by CURIE
-    term1 = svc.get_term(ontology="ms", accession="MS:1000031")
+    term1 = svc.get_term_by_accession(ontology="ms", accession="MS:1000031")
     print(term1.label, term1.synonyms, term1.children_of)
 
     # Example 2: Lookup by lowercase CURIE
-    term2 = svc.get_term(ontology="ms", accession="ms:1000449")
+    term2 = svc.get_term_by_accession(ontology="ms", accession="ms:1000449")
     print(term2.curie, term2.label)
 
     # Example 3: Cross-referenced term lookup across ontologies
-    term_ms = svc.get_term(ontology="ms", accession="OBI:0200114")
-    term_obi = svc.get_term(ontology="obi", accession="OBI:0200114")
+    term_ms = svc.get_term_by_accession(ontology="ms", accession="OBI:0200114")
+    term_obi = svc.get_term_by_accession(ontology="obi", accession="OBI:0200114")
     print(f"MS:  {term_ms.curie} -> {term_ms.label}")
     print(f"OBI: {term_obi.curie} -> {term_obi.label} (tags: {list(term_obi.tags.keys())})")
 ```
@@ -641,13 +643,13 @@ Look up a term by exact label within an ontology (case-insensitive).
 
 ```bash
 # Example 1: Exact instrument label (matches MS:1000031)
-uv run ontology-lookup get-by-exact-label --ontology ms --label "instrument model" --db .db/ontology_lookup.db
+uv run ontology-lookup get-term-by-label --ontology ms --label "instrument model" --db .db/ontology_lookup.db
 
 # Example 2: Case-insensitive label query (matches MS:1000449)
-uv run ontology-lookup get-by-exact-label --ontology ms --label "LTQ ORBITRAP" --db .db/ontology_lookup.db
+uv run ontology-lookup get-term-by-label --ontology ms --label "LTQ ORBITRAP" --db .db/ontology_lookup.db
 
 # Example 3: Exact match in another ontology (matches OBI:0000070)
-uv run ontology-lookup get-by-exact-label --ontology obi --label "assay" --db .db/ontology_lookup.db
+uv run ontology-lookup get-term-by-label --ontology obi --label "assay" --db .db/ontology_lookup.db
 ```
 
 #### API Examples
@@ -657,15 +659,15 @@ from ontology_lookup.service import OntologyLookupService
 
 with OntologyLookupService(db_path=".db/ontology_lookup.db") as svc:
     # Example 1: Exact label
-    term1 = svc.get_exact_label(ontology="ms", label="instrument model")
+    term1 = svc.get_term_by_exact_label(ontology="ms", label="instrument model")
     print(term1.curie, term1.label)
 
     # Example 2: Case-insensitive label
-    term2 = svc.get_exact_label(ontology="ms", label="LTQ ORBITRAP")
+    term2 = svc.get_term_by_exact_label(ontology="ms", label="LTQ ORBITRAP")
     print(term2.curie, term2.label)
 
     # Example 3: Match in OBI
-    term3 = svc.get_exact_label(ontology="obi", label="assay")
+    term3 = svc.get_term_by_exact_label(ontology="obi", label="assay")
     print(term3.curie if term3 else "Not found")
 ```
 
@@ -684,21 +686,21 @@ curl -X GET "http://localhost:8000/search/exact?ontology=obi&label=assay"
 
 ---
 
-### Use Case 3: Full-Text Search across Labels and Synonyms
+### Use Case 3: Exact Match Search across Labels and Synonyms
 
-Fast full-text autocomplete and keyword matching over terms and synonyms powered by SQLite FTS5.
+Case-insensitive exact matching against complete labels and synonyms. Partial matches and definitions are excluded. Use `freetext-search` (Use Case 8) for ranked keyword and definition search. Optional ontology and parent CURIE filters can narrow the results.
 
 #### CLI Examples
 
 ```bash
-# Example 1: Query instrument name
-uv run ontology-lookup search -q "orbitrap" -o ms --db .db/ontology_lookup.db
+# Example 1: Match a complete label
+uv run ontology-lookup search-by-label --label-or-synonym "orbitrap" -o ms --db .db/ontology_lookup.db
 
 # Example 2: Query by synonym (e.g. 'MALDI' matches MS:1000031)
-uv run ontology-lookup search -q "MALDI" -o ms --db .db/ontology_lookup.db
+uv run ontology-lookup search-by-label --label-or-synonym "MALDI" -o ms --db .db/ontology_lookup.db
 
-# Example 3: Prefix autocomplete across multiple ontologies
-uv run ontology-lookup search -q "mass spect*" -o ms,edam -l 10 --db .db/ontology_lookup.db
+# Example 3: Exact label or synonym across multiple ontologies
+uv run ontology-lookup search-by-label --label-or-synonym "instrument" -o ms,edam -l 10 --db .db/ontology_lookup.db
 ```
 
 #### API Examples
@@ -708,17 +710,17 @@ from ontology_lookup.service import OntologyLookupService
 
 with OntologyLookupService(db_path=".db/ontology_lookup.db") as svc:
     # Example 1: Search label
-    results1 = svc.search(query="orbitrap", ontology="ms", limit=5)
+    results1 = svc.search_by_label(label_or_synonym="orbitrap", ontology="ms", limit=5)
     for r in results1:
         print(f"[{r.curie}] {r.label}")
 
     # Example 2: Search synonym
-    results2 = svc.search(query="MALDI", ontology="ms")
+    results2 = svc.search_by_label(label_or_synonym="MALDI", ontology="ms")
     for r in results2:
         print(f"[{r.curie}] {r.label}")
 
-    # Example 3: Multi-ontology prefix search
-    results3 = svc.search(query="mass spect*", ontology=["ms", "edam"], limit=10)
+    # Example 3: Exact match across multiple ontologies
+    results3 = svc.search_by_label(label_or_synonym="instrument", ontology=["ms", "edam"], limit=10)
     print(f"Found {len(results3)} results")
 ```
 
@@ -732,26 +734,26 @@ curl -X GET "http://localhost:8000/search?q=orbitrap&ontology=ms"
 curl -X GET "http://localhost:8000/search?q=MALDI&ontology=ms"
 
 # Example 3: Multi-ontology search with limit
-curl -X GET "http://localhost:8000/search?q=spectrometer&ontology=ms&ontology=edam&limit=10"
+curl -X GET "http://localhost:8000/search?q=instrument&ontology=ms&ontology=edam&limit=10"
 ```
 
 ---
 
 ### Use Case 4: Hierarchy-Constrained Search (Parent CURIE Filter)
 
-Restrict full-text search results to descendants of specific parent terms using precomputed transitive closures.
+Restrict exact label or synonym matches to descendants of specific parent terms using indexed hierarchy tags.
 
 #### CLI Examples
 
 ```bash
 # Example 1: Search only descendants of 'instrument model' (MS:1000031)
-uv run ontology-lookup search -q "orbitrap" -o ms -p MS:1000031 --db .db/ontology_lookup.db
+uv run ontology-lookup search-by-label --label-or-synonym "LTQ Orbitrap" -o ms -p MS:1000031 --db .db/ontology_lookup.db
 
 # Example 2: Search within 'ionization type' (MS:1000008)
-uv run ontology-lookup search -q "electrospray" -o ms -p MS:1000008 --db .db/ontology_lookup.db
+uv run ontology-lookup search-by-label --label-or-synonym "electrospray ionization" -o ms -p MS:1000008 --db .db/ontology_lookup.db
 
 # Example 3: Filter across multiple parent CURIEs
-uv run ontology-lookup search -q "MALDI" -o ms -p MS:1000031,MS:1000008 --db .db/ontology_lookup.db
+uv run ontology-lookup search-by-label --label-or-synonym "MALDI" -o ms -p MS:1000031,MS:1000008 --db .db/ontology_lookup.db
 ```
 
 #### API Examples
@@ -761,17 +763,21 @@ from ontology_lookup.service import OntologyLookupService
 
 with OntologyLookupService(db_path=".db/ontology_lookup.db") as svc:
     # Example 1: Restrict search to instrument models
-    res1 = svc.search(query="orbitrap", ontology="ms", parent_curie="MS:1000031")
+    res1 = svc.search_by_label(
+        label_or_synonym="LTQ Orbitrap", ontology="ms", parent_curie="MS:1000031"
+    )
     print(f"Found {len(res1)} matches under MS:1000031")
 
     # Example 2: Search within ionization type hierarchy
-    res2 = svc.search(query="electrospray", ontology="ms", parent_curie="MS:1000008")
+    res2 = svc.search_by_label(
+        label_or_synonym="electrospray ionization", ontology="ms", parent_curie="MS:1000008"
+    )
     for r in res2:
         print(r.curie, r.label)
 
     # Example 3: Filter across multiple parent CURIEs
-    res3 = svc.search(
-        query="MALDI",
+    res3 = svc.search_by_label(
+        label_or_synonym="MALDI",
         ontology=["ms"],
         parent_curie=["MS:1000031", "MS:1000008"],
     )
@@ -782,10 +788,10 @@ with OntologyLookupService(db_path=".db/ontology_lookup.db") as svc:
 
 ```bash
 # Example 1: Parent filter under instrument model
-curl -X GET "http://localhost:8000/search?q=orbitrap&ontology=ms&parent_curie=MS:1000031"
+curl -X GET "http://localhost:8000/search?q=LTQ+Orbitrap&ontology=ms&parent_curie=MS:1000031"
 
 # Example 2: Hierarchy filter under ionization type
-curl -X GET "http://localhost:8000/search?q=electrospray&ontology=ms&parent_curie=MS:1000008"
+curl -X GET "http://localhost:8000/search?q=electrospray+ionization&ontology=ms&parent_curie=MS:1000008"
 
 # Example 3: Multiple parent CURIE filters
 curl -X GET "http://localhost:8000/search?q=MALDI&ontology=ms&parent_curie=MS:1000031&parent_curie=MS:1000008"
@@ -801,7 +807,7 @@ List the distinct parent CURIEs referenced by indexed `child-of` hierarchy tags:
 uv run ontology-lookup list-parent-terms --db .db/ontology_lookup.db
 ```
 
-The same use case is available from the Python service:
+The same use case is available from the Python service and REST API:
 
 ```python
 from ontology_lookup.service import OntologyLookupService
@@ -809,6 +815,10 @@ from ontology_lookup.service import OntologyLookupService
 with OntologyLookupService(db_path=".db/ontology_lookup.db") as svc:
     for parent_curie in svc.get_indexed_parent_terms():
         print(parent_curie)
+```
+
+```bash
+curl -X GET "http://localhost:8000/parent-terms"
 ```
 
 ---
@@ -852,14 +862,14 @@ with OntologyLookupService(db_path=".db/ontology_lookup.db") as svc:
 **REST API (HTTP)**:
 
 ```bash
-# Example 1: Resolve IRI to CURIE
+# Example 1: Resolve full IRI to CURIE
 curl -X GET "http://localhost:8000/resolve/curie?iri=http%3A%2F%2Fpurl.obolibrary.org%2Fobo%2FMS_1000031&ontology=ms"
 
-# Example 2: Resolve another IRI
-curl -X GET "http://localhost:8000/resolve/curie?iri=http%3A%2F%2Fpurl.obolibrary.org%2Fobo%2FMS_1000449&ontology=ms"
+# Example 2: Resolve CURIE to full IRI
+curl -X GET "http://localhost:8000/resolve/iri?curie=MS:1000031&ontology=ms"
 
-# Example 3: Resolve EDAM format IRI
-curl -X GET "http://localhost:8000/resolve/curie?iri=http%3A%2F%2Fedamontology.org%2Fformat_1915&ontology=edam"
+# Example 3: Resolve IRI across entire database (unscoped)
+curl -X GET "http://localhost:8000/resolve/curie?iri=http%3A%2F%2Fedamontology.org%2Fformat_1915"
 ```
 
 ---

@@ -192,7 +192,7 @@ class OntologyLookupService:
 
     # --- Use Case 1: Find a CV term with ontology and accession (CURIE or IRI) ---
     @cached_use_case
-    def get_term(
+    def get_term_by_accession(
         self,
         ontology: str,
         accession: str,
@@ -238,7 +238,7 @@ class OntologyLookupService:
 
     # --- Use Case 2: Find a CV term with ontology and label (Exact Match) ---
     @cached_use_case
-    def get_exact_label(
+    def get_term_by_exact_label(
         self,
         ontology: str,
         label: str,
@@ -267,23 +267,26 @@ class OntologyLookupService:
             if should_close:
                 db.close()
 
-    # --- Use Cases 3 & 4: Full-text search across labels and synonyms (+ parent filter) ---
+    # --- Use Cases 3 & 4: Exact match on labels and synonyms (+ parent filter) ---
     @cached_use_case
-    def search(
+    def search_by_label(
         self,
-        query: str,
+        label_or_synonym: str,
         ontology: Optional[Union[str, List[str]]] = None,
         parent_curie: Optional[Union[str, List[str]]] = None,
+        search_in_synonyms: bool = True,
         limit: int = 50,
         offset: int = 0,
     ) -> List[SearchTermSummary]:
-        """Full-text search using SQLite FTS5 over labels, synonyms, and definitions
+        """Match a complete label or synonym, with optional ontology/hierarchy filters.
 
-        with optional ontology and parent hierarchy filters (single value or list).
+        Matching is case-insensitive. Descriptions and partial matches are excluded.
+        Exact label matches are returned before exact synonym matches.
         """
-        sanitized_q = self.sanitize_fts_query(query)
+        exact_query = label_or_synonym.strip()
+        if not exact_query:
+            return []
 
-        # Normalize ontology filter
         ontologies: List[str] = []
         if ontology:
             if isinstance(ontology, str):
@@ -292,7 +295,6 @@ class OntologyLookupService:
                 for item in ontology:
                     ontologies.extend([o.strip().lower() for o in item.split(",") if o.strip()])
 
-        # Normalize parent_curie filter
         parents: List[str] = []
         if parent_curie:
             if isinstance(parent_curie, str):
@@ -301,65 +303,159 @@ class OntologyLookupService:
                 for item in parent_curie:
                     parents.extend([p.strip() for p in item.split(",") if p.strip()])
 
-        sql_parts: List[str] = [
-            "SELECT DISTINCT t.curie, t.iri, t.ontology, t.label, f.rank",
-            "FROM terms_fts f",
-            # FTS5's unindexed CURIE and ontology columns default to BINARY collation,
-            # while terms columns are NOCASE. Make the comparison explicit so
-            # SQLite can use the terms (curie, ontology) primary-key index.
-            "JOIN terms t ON f.curie = t.curie COLLATE NOCASE "
-            "AND f.ontology = t.ontology COLLATE NOCASE",
+        # Find label and synonym candidates independently. Combining both
+        # predicates with OR makes SQLite scan the full terms table on large
+        # multi-ontology databases.
+        fts_query = f'label : "{exact_query.replace(chr(34), chr(34) * 2)}"'
+        sql_parts = [
+            "WITH matches AS (",
+            "    SELECT t.curie, t.iri, t.ontology, t.label, NULL AS matched_synonym, 0.0 AS rank",
+            "    FROM (",
+            "        SELECT f.curie, f.ontology FROM terms_fts f",
+            "        WHERE terms_fts MATCH ?",
+            "    ) label_candidates",
+            "    CROSS JOIN terms t",
+            "    WHERE t.curie = label_candidates.curie",
+            "      AND t.ontology = label_candidates.ontology",
+            "      AND t.label = ?",
         ]
-        params: List[Any] = []
-
-        if parents:
-            sql_parts.append("JOIN term_details d ON t.curie = d.curie AND t.ontology = d.ontology")
-
-        sql_parts.append("WHERE terms_fts MATCH ?")
-        params.append(sanitized_q)
+        params: List[Any] = [fts_query, exact_query]
+        if search_in_synonyms:
+            sql_parts.extend(
+                [
+                    "    UNION ALL",
+                    "    SELECT t.curie, t.iri, t.ontology, t.label, "
+                    "synonym_candidates.matched_synonym, 1.0 AS rank",
+                    "    FROM (",
+                    "        SELECT synonym.curie, synonym.ontology, synonym.tag_value "
+                    "AS matched_synonym",
+                    "        FROM term_details synonym",
+                    "        WHERE synonym.tag_key = 'synonym'",
+                    "          AND synonym.tag_value = ?",
+                    "    ) synonym_candidates",
+                    "    CROSS JOIN terms t",
+                    "    WHERE t.curie = synonym_candidates.curie",
+                    "      AND t.ontology = synonym_candidates.ontology",
+                    "      AND t.label != ?",
+                ]
+            )
+            params.extend([exact_query, exact_query])
+        sql_parts.extend(
+            [
+                ")",
+                "SELECT curie, iri, ontology, label, matched_synonym, rank FROM matches",
+            ]
+        )
 
         if ontologies:
-            if len(ontologies) == 1:
-                sql_parts.append("AND t.ontology = ?")
-                params.append(ontologies[0])
-            else:
-                placeholders = ",".join(["?"] * len(ontologies))
-                sql_parts.append(f"AND t.ontology IN ({placeholders})")
-                params.extend(ontologies)
+            placeholders = ",".join("?" for _ in ontologies)
+            sql_parts.append(f"WHERE ontology IN ({placeholders})")
+            params.extend(ontologies)
 
         if parents:
-            p_placeholders = ",".join(["?"] * len(parents))
+            placeholders = ",".join("?" for _ in parents)
             sql_parts.append(
-                f"AND ((d.tag_key = 'child-of' AND d.tag_value IN ({p_placeholders})) "
-                f"OR t.curie IN ({p_placeholders}))"
+                ("AND " if ontologies else "WHERE ")
+                + "(curie IN ("
+                + placeholders
+                + ") OR EXISTS ("
+                "SELECT 1 FROM term_details hierarchy "
+                "WHERE hierarchy.curie = matches.curie "
+                "AND hierarchy.ontology = matches.ontology "
+                "AND hierarchy.tag_key = 'child-of' "
+                "AND hierarchy.tag_value IN (" + placeholders + ")))"
             )
             params.extend(parents)
             params.extend(parents)
 
-        sql_parts.append("ORDER BY f.rank")
-        sql_parts.append("LIMIT ? OFFSET ?")
+        sql_parts.extend(["ORDER BY rank, ontology, curie", "LIMIT ? OFFSET ?"])
         params.extend([limit, offset])
-
-        sql_query = "\n".join(sql_parts)
 
         db, should_close = self._get_connection()
         try:
-            cur = db.cursor()
-            rows = cur.execute(sql_query, params).fetchall()
+            rows = db.execute("\n".join(sql_parts), params).fetchall()
+            return [
+                SearchTermSummary(
+                    curie=row["curie"],
+                    iri=row["iri"],
+                    ontology=row["ontology"],
+                    label=row["label"],
+                    rank=row["rank"],
+                    matched_synonym=row["matched_synonym"],
+                )
+                for row in rows
+            ]
+        finally:
+            if should_close:
+                db.close()
 
-            seen: Set[str] = set()
+    def _fts_search(
+        self,
+        query: str,
+        ontology: Optional[Union[str, List[str]]] = None,
+        parent_curie: Optional[Union[str, List[str]]] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> List[SearchTermSummary]:
+        """Run prefix full-text search across labels, synonyms, and descriptions."""
+        sanitized_q = self.sanitize_fts_query(query)
+        ontologies: List[str] = []
+        if ontology:
+            values = [ontology] if isinstance(ontology, str) else ontology
+            for item in values:
+                ontologies.extend([o.strip().lower() for o in item.split(",") if o.strip()])
+
+        parents: List[str] = []
+        if parent_curie:
+            values = [parent_curie] if isinstance(parent_curie, str) else parent_curie
+            for item in values:
+                parents.extend([p.strip() for p in item.split(",") if p.strip()])
+
+        sql_parts: List[str] = [
+            "SELECT DISTINCT t.curie, t.iri, t.ontology, t.label, f.rank",
+            "FROM terms_fts f",
+            "JOIN terms t ON f.curie = t.curie COLLATE NOCASE "
+            "AND f.ontology = t.ontology COLLATE NOCASE",
+        ]
+        params: List[Any] = []
+        if parents:
+            sql_parts.append("JOIN term_details d ON t.curie = d.curie AND t.ontology = d.ontology")
+        sql_parts.append("WHERE terms_fts MATCH ?")
+        params.append(sanitized_q)
+
+        if ontologies:
+            placeholders = ",".join("?" for _ in ontologies)
+            sql_parts.append(f"AND t.ontology IN ({placeholders})")
+            params.extend(ontologies)
+
+        if parents:
+            placeholders = ",".join("?" for _ in parents)
+            sql_parts.append(
+                f"AND ((d.tag_key = 'child-of' AND d.tag_value IN ({placeholders})) "
+                f"OR t.curie IN ({placeholders}))"
+            )
+            params.extend(parents)
+            params.extend(parents)
+
+        sql_parts.extend(["ORDER BY f.rank", "LIMIT ? OFFSET ?"])
+        params.extend([limit, offset])
+
+        db, should_close = self._get_connection()
+        try:
+            rows = db.execute("\n".join(sql_parts), params).fetchall()
+            seen: Set[Tuple[str, str]] = set()
             results: List[SearchTermSummary] = []
-            for r in rows:
-                c = r["curie"]
-                if c not in seen:
-                    seen.add(c)
+            for row in rows:
+                identity = (row["curie"].casefold(), row["ontology"].casefold())
+                if identity not in seen:
+                    seen.add(identity)
                     results.append(
                         SearchTermSummary(
-                            curie=r["curie"],
-                            iri=r["iri"],
-                            ontology=r["ontology"],
-                            label=r["label"],
-                            rank=r["rank"],
+                            curie=row["curie"],
+                            iri=row["iri"],
+                            ontology=row["ontology"],
+                            label=row["label"],
+                            rank=row["rank"],
                         )
                     )
             return results
@@ -597,7 +693,7 @@ class OntologyLookupService:
 
         with support for single or list inputs for ontology and parent_curie.
         """
-        return self.search(
+        return self._fts_search(
             query=query,
             ontology=ontology,
             parent_curie=parent_curie,

@@ -47,7 +47,7 @@ def test_context_manager_lifecycle(seeded_db_file: str) -> None:
 
     with svc as active_service:
         assert active_service._conn is not None
-        term = active_service.get_term("ms", "MS:1000031")
+        term = active_service.get_term_by_accession("ms", "MS:1000031")
         assert term is not None
         assert active_service._conn is not None
 
@@ -58,7 +58,7 @@ def test_context_manager_lifecycle(seeded_db_file: str) -> None:
 def test_use_case_1_get_term_by_accession(service: OntologyLookupService) -> None:
     """Use Case 1: Find a CV term with ontology and accession (CURIE or IRI)."""
     # 1. Lookup by CURIE (case-insensitive)
-    term1: Optional[TermResponse] = service.get_term("ms", "ms:1000031")
+    term1: Optional[TermResponse] = service.get_term_by_accession("ms", "ms:1000031")
     assert term1 is not None
     assert term1.curie == "MS:1000031"
     assert term1.ontology == "ms"
@@ -68,7 +68,7 @@ def test_use_case_1_get_term_by_accession(service: OntologyLookupService) -> Non
     assert "MS:1000463" in term1.children_of
 
     # 2. Lookup by full IRI
-    term2: Optional[TermResponse] = service.get_term(
+    term2: Optional[TermResponse] = service.get_term_by_accession(
         "ms", "http://purl.obolibrary.org/obo/MS_1000449"
     )
     assert term2 is not None
@@ -79,41 +79,41 @@ def test_use_case_1_get_term_by_accession(service: OntologyLookupService) -> Non
     assert "MS:1000031" in term2.children_of
 
     # 3. Nonexistent returns None
-    missing = service.get_term("ms", "MS:9999999")
+    missing = service.get_term_by_accession("ms", "MS:9999999")
     assert missing is None
 
     # 4. Mismatched ontology returns None (strict ontology isolation)
-    wrong_ont = service.get_term("edam", "MS:1000031")
+    wrong_ont = service.get_term_by_accession("edam", "MS:1000031")
     assert wrong_ont is None
 
 
-def test_use_case_2_get_exact_label(service: OntologyLookupService) -> None:
+def test_use_case_2_get_term_by_exact_label(service: OntologyLookupService) -> None:
     """Use Case 2: Find a CV term with ontology and label (exact match,
     case-insensitive)."""
     # Case-insensitive label match
-    term: Optional[TermResponse] = service.get_exact_label("ms", "INSTRUMENT CONFIGURATION")
+    term: Optional[TermResponse] = service.get_term_by_exact_label("ms", "INSTRUMENT CONFIGURATION")
     assert term is not None
     assert term.curie == "MS:1000031"
     assert term.ontology == "ms"
 
     # Nonexistent label returns None
-    missing = service.get_exact_label("ms", "Nonexistent Device")
+    missing = service.get_term_by_exact_label("ms", "Nonexistent Device")
     assert missing is None
 
 
 def test_use_case_3_and_4_search(service: OntologyLookupService) -> None:
     """Use Cases 3 & 4: Full-text search over labels and synonyms (+ parent filter)."""
     # Use Case 3: Label and synonym match
-    res_label: List[SearchTermSummary] = service.search("orbitrap")
+    res_label: List[SearchTermSummary] = service.search_by_label("orbitrap")
     assert len(res_label) >= 1
     assert res_label[0].curie == "MS:1000449"
 
-    res_synonym: List[SearchTermSummary] = service.search("MALDI")
+    res_synonym: List[SearchTermSummary] = service.search_by_label("MALDI")
     assert len(res_synonym) >= 1
     assert res_synonym[0].curie == "MS:1000031"
 
     # Use Case 4: Search constrained by parent filter
-    res_parent: List[SearchTermSummary] = service.search(
+    res_parent: List[SearchTermSummary] = service.search_by_label(
         "orbitrap",
         ontology="ms",
         parent_curie="MS:1000463",
@@ -122,7 +122,7 @@ def test_use_case_3_and_4_search(service: OntologyLookupService) -> None:
     assert res_parent[0].curie == "MS:1000449"
 
     # Unrelated parent filter returns empty
-    res_unrelated: List[SearchTermSummary] = service.search(
+    res_unrelated: List[SearchTermSummary] = service.search_by_label(
         "orbitrap",
         ontology="ms",
         parent_curie="MS:9999999",
@@ -249,12 +249,12 @@ def test_freetext_search_list_inputs(service: OntologyLookupService) -> None:
 def test_is_leaf_tag(service: OntologyLookupService) -> None:
     """Verify is_leaf tag with value '1' is added if term has no child."""
     # Leaf term (MS:1000449 has no children)
-    leaf_term = service.get_term("ms", "MS:1000449")
+    leaf_term = service.get_term_by_accession("ms", "MS:1000449")
     assert leaf_term is not None
     assert leaf_term.tags.get("is_leaf") == "1"
 
     # Non-leaf term (MS:1000031 has child MS:1000449)
-    non_leaf_term = service.get_term("ms", "MS:1000031")
+    non_leaf_term = service.get_term_by_accession("ms", "MS:1000031")
     assert non_leaf_term is not None
     assert "is_leaf" not in non_leaf_term.tags
 

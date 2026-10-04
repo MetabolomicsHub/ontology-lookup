@@ -340,21 +340,49 @@ def test_cli_tag_and_delete_commands(
     mgr.load_directory(clean=True)
 
     # 1. CLI add-tag
-    main(["add-tag", "-c", "MS:1000031", "-k", "domain", "-v", "proteomics", "-d", db_file])
+    main(
+        ["admin", "add-tag", "-c", "MS:1000031", "-k", "domain", "-v", "proteomics", "-d", db_file]
+    )
     captured = capsys.readouterr()
     assert "Added tag 'domain=proteomics'" in captured.out
 
     # 2. CLI update-tag
-    main(["update-tag", "-c", "MS:1000031", "-k", "domain", "-v", "mass_spec", "-d", db_file])
+    main(
+        [
+            "admin",
+            "update-tag",
+            "-c",
+            "MS:1000031",
+            "-k",
+            "domain",
+            "-v",
+            "mass_spec",
+            "-d",
+            db_file,
+        ]
+    )
     captured = capsys.readouterr()
     assert "Updated tag 'domain'" in captured.out
 
     # 3. CLI delete-tag
-    main(["delete-tag", "-c", "MS:1000031", "-k", "domain", "-v", "mass_spec", "-d", db_file])
+    main(
+        [
+            "admin",
+            "delete-tag",
+            "-c",
+            "MS:1000031",
+            "-k",
+            "domain",
+            "-v",
+            "mass_spec",
+            "-d",
+            db_file,
+        ]
+    )
     captured = capsys.readouterr()
     assert "Deleted 1 tag(s)" in captured.out
 
     # 4. CLI delete-ontology
-    main(["delete-ontology", "-n", "obi", "-d", db_file])
+    main(["admin", "delete-ontology", "-n", "obi", "-d", db_file])
     captured = capsys.readouterr()
     assert "Successfully deleted 'obi'" in captured.out

@@ -43,6 +43,7 @@ SAMPLE_MS_DICT: Dict[str, Any] = {
                     "synonym": [
                         {"type": ["literal"], "value": "instrument config"},
                         {"type": ["literal"], "value": "MALDI instrument"},
+                        {"type": ["literal"], "value": "MALDI"},
                     ],
                     "hierarchicalAncestor": [
                         "http://purl.obolibrary.org/obo/MS_1000000",
