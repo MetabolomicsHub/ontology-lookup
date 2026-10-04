@@ -30,10 +30,25 @@ dev = [
     "httpx>=0.27.0",
     "ruff>=0.16.10",
     "pre-commit>=4.6.2",
+    "commitizen>=4.19.1",
 ]
 
 [project.scripts]
 ontology-lookup = "ontology_lookup.cli:main"
+
+
+[tool.commitizen]
+name = "cz_conventional_commits"
+version_provider = "uv"
+version = "1.0.0"
+tag_format = "v$major.$minor.$patch"
+version_files = [
+    "pyproject.toml:version",
+    "ontology_lookup/__init__.py:__version__",
+]
+bump_message = "bump: version $current_version -> $new_version"
+update_changelog_on_bump = true
+
 
 [tool.setuptools.packages.find]
 where = ["src"]
