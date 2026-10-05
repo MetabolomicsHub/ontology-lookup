@@ -1,5 +1,4 @@
 import sqlite3
-from typing import List
 
 import pytest
 
@@ -56,7 +55,7 @@ def test_schema_initialization(tmp_path: pytest.TempPathFactory) -> None:
     assert info_row[2] is not None
 
     # Check indices exist
-    indices: List[str] = [
+    indices: list[str] = [
         row[0]
         for row in cur.execute("SELECT name FROM sqlite_master WHERE type='index'").fetchall()
     ]

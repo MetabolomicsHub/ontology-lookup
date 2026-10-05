@@ -1,5 +1,6 @@
 import io
-from typing import Any, Dict, Generator, List
+from collections.abc import Generator
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -24,12 +25,12 @@ def seeded_db_path(tmp_path_factory: pytest.TempPathFactory) -> str:
 
 
 @pytest.fixture(scope="module")
-def client(seeded_db_path: str) -> Generator[TestClient, None, None]:
+def client(seeded_db_path: str) -> Generator[TestClient]:
     """TestClient configured with the seeded test database."""
     app = create_app(db_path=seeded_db_path)
 
     # Override get_db dependency to point to the seeded test database
-    def override_get_db() -> Generator[Any, None, None]:
+    def override_get_db() -> Generator[Any]:
         conn = get_readonly_connection(seeded_db_path)
         try:
             yield conn
@@ -56,7 +57,7 @@ def test_use_case_1_accession_curie_and_iri(client: TestClient) -> None:
     # 1. Lookup with uppercase CURIE
     res1 = client.get("/terms/MS:1000031")
     assert res1.status_code == 200
-    data1: Dict[str, Any] = res1.json()
+    data1: dict[str, Any] = res1.json()
     assert data1["curie"] == "MS:1000031"
     assert data1["label"] == "instrument configuration"
     assert "instrument config" in data1["synonyms"]
@@ -96,7 +97,7 @@ def test_use_case_2_exact_label_match(client: TestClient) -> None:
         params={"ontology": "MS", "label": "INSTRUMENT CONFIGURATION"},
     )
     assert response.status_code == 200
-    data: Dict[str, Any] = response.json()
+    data: dict[str, Any] = response.json()
     assert data["curie"] == "MS:1000031"
     assert data["ontology"] == "ms"
 
@@ -114,14 +115,14 @@ def test_use_cases_3_and_4_full_text_search(client: TestClient) -> None:
     # Search for term matching label
     res1 = client.get("/search", params={"q": "orbitrap", "ontology": "ms"})
     assert res1.status_code == 200
-    items1: List[Dict[str, Any]] = res1.json()
+    items1: list[dict[str, Any]] = res1.json()
     assert len(items1) >= 1
     assert items1[0]["curie"] == "MS:1000449"
 
     # Search for term matching synonym ("MALDI instrument" matches MS:1000031)
     res2 = client.get("/search", params={"q": "MALDI", "ontology": "ms"})
     assert res2.status_code == 200
-    items2: List[Dict[str, Any]] = res2.json()
+    items2: list[dict[str, Any]] = res2.json()
     assert len(items2) >= 1
     assert items2[0]["curie"] == "MS:1000031"
 
@@ -131,7 +132,7 @@ def test_use_cases_3_and_4_full_text_search(client: TestClient) -> None:
         params={"q": "orbitrap", "ontology": "ms", "parent_curie": "MS:1000463"},
     )
     assert res3.status_code == 200
-    items3: List[Dict[str, Any]] = res3.json()
+    items3: list[dict[str, Any]] = res3.json()
     assert len(items3) == 1
     assert items3[0]["curie"] == "MS:1000449"
 
@@ -188,9 +189,9 @@ def test_ontologies_endpoint(client: TestClient) -> None:
     """Test /ontologies endpoint."""
     response = client.get("/ontologies")
     assert response.status_code == 200
-    onts = response.json()
-    assert len(onts) >= 1
-    ms = next(o for o in onts if o["ontology"] == "ms")
+    ontologies = response.json()
+    assert len(ontologies) >= 1
+    ms = next(o for o in ontologies if o["ontology"] == "ms")
     assert ms["prefix"] == "MS"
     assert ms["num_of_terms"] >= 5
     assert ms["num_of_obsoletes"] >= 1

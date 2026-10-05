@@ -1,6 +1,5 @@
 import os
 import sqlite3
-from typing import List, Optional
 
 # DDL for core tables
 CREATE_TERMS_TABLE = """
@@ -60,7 +59,7 @@ CREATE TABLE IF NOT EXISTS database_info (
 """
 
 # Indices for exact matching and fast joins
-CREATE_INDICES: List[str] = [
+CREATE_INDICES: list[str] = [
     "CREATE INDEX IF NOT EXISTS idx_terms_curie ON terms(curie);",
     "CREATE INDEX IF NOT EXISTS idx_terms_iri ON terms(iri, ontology);",
     "CREATE INDEX IF NOT EXISTS idx_terms_iri_only ON terms(iri);",
@@ -72,7 +71,7 @@ CREATE_INDICES: List[str] = [
 ]
 
 
-def initialize_schema(conn: sqlite3.Connection, created_by: Optional[str] = None) -> None:
+def initialize_schema(conn: sqlite3.Connection, created_by: None | str = None) -> None:
     """Initialize all schema tables and virtual tables in the database."""
     cur = conn.cursor()
     cur.execute(CREATE_TERMS_TABLE)
@@ -84,7 +83,7 @@ def initialize_schema(conn: sqlite3.Connection, created_by: Optional[str] = None
         cur.execute(idx_sql)
 
     # Initialize database_info row if not present
-    creator = created_by or os.environ.get("USER") or os.environ.get("LOGNAME") or "ontology_lookup"
+    creator = created_by or os.environ.get("USER") or "ontology_lookup"
     cur.execute("SELECT COUNT(*) FROM database_info")
     if cur.fetchone()[0] == 0:
         cur.execute(

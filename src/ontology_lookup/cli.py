@@ -2,7 +2,6 @@ import argparse
 import json
 import os
 import sys
-from typing import List, Optional
 
 import uvicorn
 
@@ -12,7 +11,7 @@ from ontology_lookup.loader import JsonOntologyLoader
 from ontology_lookup.manager import OntologyDatabaseManager
 
 
-def parse_parents_arg(parents_str: Optional[str]) -> Optional[List[str]]:
+def parse_parents_arg(parents_str: None | str) -> None | list[str]:
     """Parse comma-separated parents string into a list of CURIEs."""
     if parents_str is None:
         return None
@@ -60,7 +59,7 @@ def build_command(args: argparse.Namespace) -> None:
 
 def init_db_command(args: argparse.Namespace) -> None:
     """Initialize or recreate database by processing JSON files in the source directory."""
-    ontologies: Optional[List[str]] = None
+    ontologies: None | list[str] = None
     if args.ontologies:
         ontologies = [o.strip() for o in args.ontologies.split(",") if o.strip()]
 
@@ -229,71 +228,71 @@ def freetext_search_command(args: argparse.Namespace) -> None:
 
     ontologies = [o.strip() for o in args.ontology.split(",")] if args.ontology else None
     parents = parse_parents_arg(args.parent)
-    with OntologyLookupService(db_path=args.db) as svc:
-        results = svc.freetext_search(
-            query=args.query,
-            ontology=ontologies,
-            parent_curie=parents,
-            limit=args.limit,
-            offset=args.offset,
-        )
-        if not results:
-            print(f"No results found for query: '{args.query}'")
-        else:
-            print(f"Found {len(results)} match(es) for '{args.query}':")
-            print(f"{'CURIE':<15} {'Ontology':<10} {'Label':<40} {'Rank':<8}")
-            print("-" * 75)
-            for r in results:
-                rank_str = f"{r.rank:.2f}" if r.rank is not None else "N/A"
-                print(f"{r.curie:<15} {r.ontology:<10} {r.label:<40} {rank_str:<8}")
+    svc = OntologyLookupService(db_path=args.db)
+    results = svc.freetext_search(
+        query=args.query,
+        ontology=ontologies,
+        parent_curie=parents,
+        limit=args.limit,
+        offset=args.offset,
+    )
+    if not results:
+        print(f"No results found for query: '{args.query}'")
+    else:
+        print(f"Found {len(results)} match(es) for '{args.query}':")
+        print(f"{'CURIE':<15} {'Ontology':<10} {'Label':<40} {'Rank':<8}")
+        print("-" * 75)
+        for r in results:
+            rank_str = f"{r.rank:.2f}" if r.rank is not None else "N/A"
+            print(f"{r.curie:<15} {r.ontology:<10} {r.label:<40} {rank_str:<8}")
 
 
 def lookup_command(args: argparse.Namespace) -> None:
     """Run a read-only OntologyLookupService use case and print JSON."""
     from ontology_lookup.service import OntologyLookupService
 
-    with OntologyLookupService(db_path=args.db) as svc:
-        if args.command == "get-term-by-accession":
-            result = svc.get_term_by_accession(args.ontology, args.accession)
-        elif args.command in ("get-term-by-label"):
-            result = svc.get_term_by_exact_label(args.ontology, args.label)
-        elif args.command in ("freetext-search"):
-            result = svc.freetext_search(
-                args.query,
-                args.ontology,
-                parent_curie=parse_parents_arg(args.parent),
-                limit=args.limit,
-                offset=args.offset,
-            )
-        elif args.command in ("search-by-label",):
-            result = svc.search_by_label(
-                label_or_synonym=args.label_or_synonym,
-                ontology=args.ontology,
-                parent_curie=parse_parents_arg(args.parent),
-                search_in_synonyms=args.search_in_synonyms,
-                limit=args.limit,
-                offset=args.offset,
-            )
-        elif args.command == "curie-to-iri":
-            result = svc.find_iri(args.curie, args.ontology)
-        elif args.command in ("iri-to-curie",):
-            result = svc.find_curie(args.iri, args.ontology)
-        elif args.command == "search-by-tag":
-            result = svc.search_by_tag(
-                args.tag_key, args.tag_value, args.ontology, args.limit, args.offset
-            )
-        elif args.command == "get-children":
-            result = svc.get_children(args.parent, args.ontology, args.limit, args.offset)
-        elif args.command == "list-ontologies":
-            result = svc.list_ontologies()
-        elif args.command == "list-parent-terms":
-            result = svc.get_indexed_parent_terms()
-        elif args.command == "get-ontology":
-            result = svc.get_ontology(args.ontology)
-        elif args.command == "health":
-            result = svc.get_health()
-        else:
-            result = svc.get_database_info()
+    svc = OntologyLookupService(db_path=args.db)
+    if args.command == "get-term-by-accession":
+        result = svc.get_term_by_accession(args.ontology, args.accession)
+    elif args.command in ("get-term-by-label"):
+        result = svc.get_term_by_exact_label(args.ontology, args.label)
+    elif args.command in ("freetext-search"):
+        result = svc.freetext_search(
+            args.query,
+            args.ontology,
+            parent_curie=parse_parents_arg(args.parent),
+            limit=args.limit,
+            offset=args.offset,
+        )
+    elif args.command in ("search-by-label",):
+        result = svc.search_by_label(
+            label_or_synonym=args.label_or_synonym,
+            ontology=args.ontology,
+            parent_curie=parse_parents_arg(args.parent),
+            search_in_synonyms=args.search_in_synonyms,
+            limit=args.limit,
+            offset=args.offset,
+        )
+    elif args.command == "curie-to-iri":
+        result = svc.find_iri(args.curie, args.ontology)
+    elif args.command in ("iri-to-curie",):
+        result = svc.find_curie(args.iri, args.ontology)
+    elif args.command == "search-by-tag":
+        result = svc.search_by_tag(
+            args.tag_key, args.tag_value, args.ontology, args.limit, args.offset
+        )
+    elif args.command == "get-children":
+        result = svc.get_children(args.parent, args.ontology, args.limit, args.offset)
+    elif args.command == "list-ontologies":
+        result = svc.list_ontologies()
+    elif args.command == "list-parent-terms":
+        result = svc.get_indexed_parent_terms()
+    elif args.command == "get-ontology":
+        result = svc.get_ontology(args.ontology)
+    elif args.command == "health":
+        result = svc.get_health()
+    else:
+        result = svc.get_database_info()
 
     if result is None:
         print("No result found.")
@@ -524,7 +523,7 @@ def create_parser() -> argparse.ArgumentParser:
         "get-term-by-accession",
         help="Look up a term by ontology and CURIE or IRI",
     )
-    term_parser.add_argument("--ontology", "-o", required=True, help="Ontology short name")
+    term_parser.add_argument("--ontology", "-o", required=False, help="Ontology short name")
     term_parser.add_argument("--accession", "-a", required=True, help="Term CURIE or full IRI")
     add_db_argument(term_parser)
     term_parser.set_defaults(command="get-term-by-accession")
@@ -733,7 +732,7 @@ def create_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Optional[List[str]] = None) -> None:
+def main(argv: None | list[str] = None) -> None:
     """Entry point for CLI execution."""
     parser = create_parser()
     args = parser.parse_args(argv if argv is not None else sys.argv[1:])

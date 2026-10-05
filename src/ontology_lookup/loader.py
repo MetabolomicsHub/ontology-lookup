@@ -1,9 +1,10 @@
 import io
-import os
+import logging
 import re
 import sqlite3
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple, Union
+from typing import Any
 
 import ijson
 
@@ -11,10 +12,12 @@ from ontology_lookup.config import DEFAULT_DATABASE_CONFIG
 from ontology_lookup.db import enable_wal_mode, get_write_connection
 from ontology_lookup.schema import initialize_schema
 
-DEFAULT_TARGET_PARENTS: List[str] = list(DEFAULT_DATABASE_CONFIG.parent_terms)
+logger = logging.getLogger(__name__)
+
+DEFAULT_TARGET_PARENTS: list[str] = list(DEFAULT_DATABASE_CONFIG.parent_terms)
 
 
-def extract_first_str(v: Any) -> Optional[str]:
+def extract_first_str(v: Any) -> None | str:
     """Recursively extract the first non-empty string from nested OLS value structures."""
     if v is None:
         return None
@@ -29,13 +32,12 @@ def extract_first_str(v: Any) -> Optional[str]:
             if res:
                 return res
         return None
-    if isinstance(v, dict):
-        if "value" in v:
-            return extract_first_str(v["value"])
+    if isinstance(v, dict) and "value" in v:
+        return extract_first_str(v["value"])
     return None
 
 
-def extract_all_strs(v: Any) -> List[str]:
+def extract_all_strs(v: Any) -> list[str]:
     """Recursively extract all non-empty strings from nested OLS value structures."""
     if v is None:
         return []
@@ -45,13 +47,12 @@ def extract_all_strs(v: Any) -> List[str]:
     if isinstance(v, (int, float)):
         return [str(v)]
     if isinstance(v, list):
-        out: List[str] = []
+        out: list[str] = []
         for item in v:
             out.extend(extract_all_strs(item))
         return out
-    if isinstance(v, dict):
-        if "value" in v:
-            return extract_all_strs(v["value"])
+    if isinstance(v, dict) and "value" in v:
+        return extract_all_strs(v["value"])
     return []
 
 
@@ -70,12 +71,12 @@ def iri_to_curie(iri: str) -> str:
     return frag
 
 
-def build_parent_lookup(parents: Iterable[str]) -> Dict[str, str]:
+def build_parent_lookup(parents: Iterable[str]) -> dict[str, str]:
     """Map variants of target parent representations (CURIEs, IRIs, short forms)
 
     to their canonical target parent CURIE string.
     """
-    lookup: Dict[str, str] = {}
+    lookup: dict[str, str] = {}
     for p in parents:
         canonical = p.strip()
         if not canonical:
@@ -92,8 +93,8 @@ def build_parent_lookup(parents: Iterable[str]) -> Dict[str, str]:
                 lookup[f"http://edamontology.org/{local}".lower()] = canonical
                 lookup[local.lower()] = canonical
                 if "_" in local:
-                    lpref, lnum = local.split("_", 1)
-                    lookup[f"{lpref}:{lnum}".lower()] = canonical
+                    lookup_prefix, lookup_number = local.split("_", 1)
+                    lookup[f"{lookup_prefix}:{lookup_number}".lower()] = canonical
         if canonical.startswith(("http://", "https://")):
             lookup[canonical.lower()] = canonical
     return lookup
@@ -102,9 +103,9 @@ def build_parent_lookup(parents: Iterable[str]) -> Dict[str, str]:
 def extract_ontology_metadata(
     fp: Any,
     default_ontology: str,
-) -> Dict[str, str]:
+) -> dict[str, str]:
     """Extract ontology short name, title, description, source URI, prefix, and version."""
-    meta: Dict[str, str] = {
+    meta: dict[str, str] = {
         "ontology": default_ontology,
         "name": "",
         "description": "",
@@ -124,9 +125,7 @@ def extract_ontology_metadata(
                     prefix in ("ontologies.item.title", "ontologies.item.label")
                     and event in ("string", "literal")
                     and not meta["name"]
-                ):
-                    meta["name"] = str(value).strip()
-                elif (
+                ) or (
                     ("title.value" in prefix or "label.value" in prefix)
                     and event in ("string", "literal")
                     and not meta["name"]
@@ -162,8 +161,8 @@ def extract_ontology_metadata(
                     version_iri = str(value).strip()
                 elif prefix == "ontologies.item.classes.item" and event == "start_map":
                     break
-        except Exception:
-            pass
+        except Exception as ex:  # noqa: BLE001
+            logger.warning("Error: %s", ex)
         finally:
             fp.seek(pos)
 
@@ -192,13 +191,13 @@ def derive_iri_prefix(conn: sqlite3.Connection, ontology: str, preferred_prefix:
     )
     rows = cur.fetchall()
     if rows:
-        prefixes: Set[str] = set()
+        prefixes: set[str] = set()
         for iri, curie in rows:
             acc = curie.split(":", 1)[1]
             if iri.endswith(acc):
                 prefixes.add(iri[: -len(acc)])
         if prefixes:
-            return sorted(prefixes, key=len)[0]
+            return min(prefixes, key=len)
 
     cur.execute("SELECT iri FROM terms WHERE ontology = ? LIMIT 20", (ontology,))
     rows = cur.fetchall()
@@ -214,9 +213,9 @@ def derive_iri_prefix(conn: sqlite3.Connection, ontology: str, preferred_prefix:
 def update_ontology_stats(
     conn: sqlite3.Connection,
     ontology: str,
-    prefix: Optional[str] = None,
-    version: Optional[str] = None,
-    name: Optional[str] = None,
+    prefix: None | str = None,
+    version: None | str = None,
+    name: None | str = None,
 ) -> None:
     """Update num_of_terms, num_of_obsoletes, num_of_details, iri_prefix, version, and name."""
     cur = conn.cursor()
@@ -252,8 +251,8 @@ def update_ontology_stats(
 
     iri_prefix = derive_iri_prefix(conn, clean_ont, prefix)
 
-    extra_updates: List[str] = []
-    params: List[Any] = [num_terms, num_obsoletes, num_details, iri_prefix]
+    extra_updates: list[str] = []
+    params: list[Any] = [num_terms, num_obsoletes, num_details, iri_prefix]
 
     if version:
         extra_updates.append("version = ?")
@@ -284,8 +283,8 @@ def recalculate_all_ontology_stats(conn: sqlite3.Connection) -> None:
     """Recalculate statistics and IRI prefixes for all ontologies present in terms table."""
     cur = conn.cursor()
     cur.execute("SELECT DISTINCT ontology FROM terms")
-    onts = [r[0] for r in cur.fetchall()]
-    for ont in onts:
+    ontologies = [r[0] for r in cur.fetchall()]
+    for ont in ontologies:
         cur.execute("SELECT COUNT(*) FROM ontologies WHERE ontology = ?", (ont,))
         if cur.fetchone()[0] == 0:
             cur.execute(
@@ -302,25 +301,25 @@ class JsonOntologyLoader:
     def __init__(
         self,
         db_path: str,
-        target_parents: Optional[List[str]] = None,
-        batch_size: Optional[int] = None,
+        target_parents: None | list[str] = None,
+        batch_size: None | int = None,
         config=None,
     ) -> None:
         config = config or DEFAULT_DATABASE_CONFIG
         self.db_path = str(db_path or config.database_path)
-        self.target_parents: List[str] = (
+        self.target_parents: list[str] = (
             list(target_parents) if target_parents is not None else list(config.parent_terms)
         )
         self.batch_size = batch_size or config.batch_size
 
     def load_file(
         self,
-        source: Union[str, Path, io.BytesIO, io.BufferedReader],
-        ontology_name: Optional[str] = None,
-        target_parents: Optional[List[str]] = None,
+        source: None | str | Path | io.BytesIO | io.BufferedReader,
+        ontology_name: None | str = None,
+        target_parents: None | list[str] = None,
         delete_existing: bool = True,
         clean_db: bool = False,
-    ) -> Tuple[int, int]:
+    ) -> tuple[int, int]:
         """Ingest ontology classes from a JSON file into SQLite.
 
         Args:
@@ -335,8 +334,8 @@ class JsonOntologyLoader:
         Returns:
             Tuple of (terms_count, details_count).
         """
-        if clean_db and os.path.exists(self.db_path):
-            os.remove(self.db_path)
+        if clean_db and Path(self.db_path).exists():
+            Path(self.db_path).unlink()
 
         # Infer ontology name from file name if not provided
         inferred_name = ontology_name
@@ -354,12 +353,12 @@ class JsonOntologyLoader:
 
         # Determine stream
         should_close = False
-        fp: Union[io.BytesIO, io.BufferedReader]
+        fp: None | io.BytesIO | io.BufferedReader
         if isinstance(source, (str, Path)):
             src_path = Path(source).resolve()
             if not src_path.exists():
                 raise FileNotFoundError(f"Ontology JSON file not found: {src_path}")
-            fp = open(src_path, "rb")
+            fp = src_path.open("rb")
             should_close = True
         else:
             fp = source
@@ -398,16 +397,16 @@ class JsonOntologyLoader:
         cur.execute("UPDATE database_info SET updated_time = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')")
         conn.commit()
 
-        terms_batch: List[Tuple[str, str, str, str]] = []
-        details_batch: List[Tuple[str, str, str, str]] = []
-        fts_batch: List[Tuple[str, str, str, str, str]] = []
+        terms_batch: list[tuple[str, str, str, str]] = []
+        details_batch: list[tuple[str, str, str, str]] = []
+        fts_batch: list[tuple[str, str, str, str, str]] = []
 
         total_terms = 0
         total_details = 0
 
         saw_child_flags = False
-        curies_in_file: List[str] = []
-        parent_refs: Set[str] = set()
+        curies_in_file: list[str] = []
+        parent_refs: set[str] = set()
 
         def flush_batches() -> None:
             nonlocal total_terms, total_details
@@ -464,7 +463,7 @@ class JsonOntologyLoader:
                 terms_batch.append((curie, iri, target_ontology, label))
 
                 # Synonyms
-                synonyms_set: Set[str] = set(extract_all_strs(cls.get("synonym")))
+                synonyms_set: set[str] = set(extract_all_strs(cls.get("synonym")))
                 for k, v in cls.items():
                     if "synonym" in k.lower() and k not in (
                         "synonym",
@@ -528,7 +527,7 @@ class JsonOntologyLoader:
                         or extract_all_strs(cls.get("hierarchicalParent"))
                         or extract_all_strs(cls.get("directParent"))
                     )
-                    matched_parents: Set[str] = set()
+                    matched_parents: set[str] = set()
                     for anc in ancestors:
                         clean_anc = anc.strip().lower()
                         if clean_anc in parent_lookup:
@@ -539,9 +538,9 @@ class JsonOntologyLoader:
                             details_batch.append((curie, target_ontology, "child-of", mp))
 
                 # FTS entry
-                syns_str = " ".join(synonyms_set)
+                synonyms_str = " ".join(synonyms_set)
                 defs_str = " ".join(defs)
-                fts_batch.append((curie, target_ontology, label, syns_str, defs_str))
+                fts_batch.append((curie, target_ontology, label, synonyms_str, defs_str))
 
                 if len(terms_batch) >= self.batch_size:
                     flush_batches()

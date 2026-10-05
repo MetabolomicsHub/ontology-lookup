@@ -1,5 +1,6 @@
 import io
-from typing import Generator, List, Optional
+import sqlite3
+from collections.abc import Generator
 
 import pytest
 
@@ -32,33 +33,24 @@ def seeded_db_file(tmp_path_factory: pytest.TempPathFactory) -> str:
 
 
 @pytest.fixture
-def service(seeded_db_file: str) -> Generator[OntologyLookupService, None, None]:
-    """Create an OntologyLookupService instance using context manager
-    to maintain connection."""
-    with OntologyLookupService(db_path=seeded_db_file) as svc:
-        yield svc
+def service(seeded_db_file: str) -> Generator[OntologyLookupService]:
+    """Create an OntologyLookupService for the seeded database."""
+    yield OntologyLookupService(db_path=seeded_db_file)
 
 
-def test_context_manager_lifecycle(seeded_db_file: str) -> None:
-    """Verify that 'with' keyword maintains connection
-    during the block and closes on exit."""
+def test_get_connection_lifecycle(seeded_db_file: str) -> None:
+    """Verify get_connection opens a fresh connection and closes it on exit."""
     svc = OntologyLookupService(db_path=seeded_db_file)
-    assert svc._conn is None
-
-    with svc as active_service:
-        assert active_service._conn is not None
-        term = active_service.get_term_by_accession("ms", "MS:1000031")
-        assert term is not None
-        assert active_service._conn is not None
-
-    # Connection closed after exiting 'with' block
-    assert svc._conn is None
+    with svc.get_connection() as conn:
+        assert conn.execute("SELECT 1").fetchone()[0] == 1
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        conn.execute("SELECT 1")
 
 
 def test_use_case_1_get_term_by_accession(service: OntologyLookupService) -> None:
     """Use Case 1: Find a CV term with ontology and accession (CURIE or IRI)."""
     # 1. Lookup by CURIE (case-insensitive)
-    term1: Optional[TermResponse] = service.get_term_by_accession("ms", "ms:1000031")
+    term1: None | TermResponse = service.get_term_by_accession("ms", "ms:1000031")
     assert term1 is not None
     assert term1.curie == "MS:1000031"
     assert term1.ontology == "ms"
@@ -68,7 +60,7 @@ def test_use_case_1_get_term_by_accession(service: OntologyLookupService) -> Non
     assert "MS:1000463" in term1.children_of
 
     # 2. Lookup by full IRI
-    term2: Optional[TermResponse] = service.get_term_by_accession(
+    term2: None | TermResponse = service.get_term_by_accession(
         "ms", "http://purl.obolibrary.org/obo/MS_1000449"
     )
     assert term2 is not None
@@ -91,7 +83,7 @@ def test_use_case_2_get_term_by_exact_label(service: OntologyLookupService) -> N
     """Use Case 2: Find a CV term with ontology and label (exact match,
     case-insensitive)."""
     # Case-insensitive label match
-    term: Optional[TermResponse] = service.get_term_by_exact_label("ms", "INSTRUMENT CONFIGURATION")
+    term: None | TermResponse = service.get_term_by_exact_label("ms", "INSTRUMENT CONFIGURATION")
     assert term is not None
     assert term.curie == "MS:1000031"
     assert term.ontology == "ms"
@@ -104,16 +96,16 @@ def test_use_case_2_get_term_by_exact_label(service: OntologyLookupService) -> N
 def test_use_case_3_and_4_search(service: OntologyLookupService) -> None:
     """Use Cases 3 & 4: Full-text search over labels and synonyms (+ parent filter)."""
     # Use Case 3: Label and synonym match
-    res_label: List[SearchTermSummary] = service.search_by_label("orbitrap")
+    res_label: list[SearchTermSummary] = service.search_by_label("orbitrap")
     assert len(res_label) >= 1
     assert res_label[0].curie == "MS:1000449"
 
-    res_synonym: List[SearchTermSummary] = service.search_by_label("MALDI")
+    res_synonym: list[SearchTermSummary] = service.search_by_label("MALDI")
     assert len(res_synonym) >= 1
     assert res_synonym[0].curie == "MS:1000031"
 
     # Use Case 4: Search constrained by parent filter
-    res_parent: List[SearchTermSummary] = service.search_by_label(
+    res_parent: list[SearchTermSummary] = service.search_by_label(
         "orbitrap",
         ontology="ms",
         parent_curie="MS:1000463",
@@ -122,7 +114,7 @@ def test_use_case_3_and_4_search(service: OntologyLookupService) -> None:
     assert res_parent[0].curie == "MS:1000449"
 
     # Unrelated parent filter returns empty
-    res_unrelated: List[SearchTermSummary] = service.search_by_label(
+    res_unrelated: list[SearchTermSummary] = service.search_by_label(
         "orbitrap",
         ontology="ms",
         parent_curie="MS:9999999",
@@ -132,7 +124,7 @@ def test_use_case_3_and_4_search(service: OntologyLookupService) -> None:
 
 def test_use_case_5_find_curie(service: OntologyLookupService) -> None:
     """Use Case 5: Find CURIE of an IRI in an ontology."""
-    res: Optional[CurieResolutionResponse] = service.find_curie(
+    res: None | CurieResolutionResponse = service.find_curie(
         "http://purl.obolibrary.org/obo/MS_1000000", "ms"
     )
     assert res is not None
@@ -147,12 +139,12 @@ def test_use_case_5_find_curie(service: OntologyLookupService) -> None:
 def test_use_case_6_search_by_tag(service: OntologyLookupService) -> None:
     """Use Case 6: Key-value metadata tag search."""
     # Search by obsolete tag
-    obs: List[SearchTermSummary] = service.search_by_tag("obsolete", "true")
+    obs: list[SearchTermSummary] = service.search_by_tag("obsolete", "true")
     assert len(obs) == 1
     assert obs[0].curie == "MS:1000999"
 
     # Search by child-of tag
-    children: List[SearchTermSummary] = service.search_by_tag("child-of", "MS:1000463")
+    children: list[SearchTermSummary] = service.search_by_tag("child-of", "MS:1000463")
     child_curies = {c.curie for c in children}
     assert "MS:1000031" in child_curies
     assert "MS:1000449" in child_curies

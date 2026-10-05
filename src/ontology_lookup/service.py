@@ -1,16 +1,19 @@
+from __future__ import annotations
+
 import re
 import sqlite3
 from collections import defaultdict
+from collections.abc import Callable, Generator
+from contextlib import contextmanager
 from copy import deepcopy
 from functools import wraps
 from pathlib import Path
 from threading import RLock
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
+from typing import Any
 
 from cachetools import TTLCache, cached
 
-from ontology_lookup.db import get_readonly_connection
-from ontology_lookup.models import (
+from ontology_lookup import (
     CurieResolutionResponse,
     DatabaseInfo,
     HealthResponse,
@@ -20,6 +23,7 @@ from ontology_lookup.models import (
     TermRecord,
     TermResponse,
 )
+from ontology_lookup.db import get_readonly_connection
 
 _CACHE_TTL_SECONDS = 60
 _USE_CASE_CACHE = TTLCache(maxsize=4096, ttl=_CACHE_TTL_SECONDS)
@@ -46,7 +50,7 @@ def _normalize_cache_key(value: Any) -> Any:
 def _use_case_cache_key(method: Callable) -> Callable:
     """Create a cache key function scoped to a use-case method and database."""
 
-    def make_key(service: "OntologyLookupService", *args: Any, **kwargs: Any) -> tuple:
+    def make_key(service: OntologyLookupService, *args: Any, **kwargs: Any) -> tuple:
         db_path = str(Path(service.db_path).expanduser().resolve())
         return (
             method.__qualname__,
@@ -67,7 +71,7 @@ def cached_use_case(method: Callable) -> Callable:
     )(method)
 
     @wraps(method)
-    def wrapped(service: "OntologyLookupService", *args: Any, **kwargs: Any) -> Any:
+    def wrapped(service: OntologyLookupService, *args: Any, **kwargs: Any) -> Any:
         # Return detached values so a caller cannot mutate shared cached results.
         return deepcopy(cached_method(service, *args, **kwargs))
 
@@ -77,51 +81,24 @@ def cached_use_case(method: Callable) -> Callable:
 class OntologyLookupService:
     """Service providing high-performance query methods for local ontology lookup use cases.
 
-    Supports usage as a context manager with the `with` keyword to maintain a single
-    reusable database connection across operations.
+    Each use case opens and closes its own read-only database connection. Use
+    :meth:`get_connection` when direct access to a connection is needed.
     """
 
     def __init__(self, db_path: str = ".db/ontology_lookup.db") -> None:
         self.db_path = db_path
-        self._conn: Optional[sqlite3.Connection] = None
 
-    def __enter__(self) -> "OntologyLookupService":
-        """Enter context manager, opening and maintaining a reusable connection."""
-        if self._conn is None:
-            self._conn = get_readonly_connection(self.db_path)
-        return self
+    @contextmanager
+    def get_connection(self) -> Generator[sqlite3.Connection]:
+        """Yield a new read-only connection and close it when the context exits."""
+        conn = get_readonly_connection(self.db_path)
+        try:
+            yield conn
+        finally:
+            conn.close()
 
-    def __exit__(
-        self,
-        exc_type: Optional[Any],
-        exc_val: Optional[Any],
-        exc_tb: Optional[Any],
-    ) -> None:
-        """Exit context manager, closing the maintained connection."""
-        self.close()
-
-    def close(self) -> None:
-        """Close the maintained connection if currently open."""
-        if self._conn is not None:
-            self._conn.close()
-            self._conn = None
-
-    def _get_connection(self) -> Tuple[sqlite3.Connection, bool]:
-        """Obtain active connection.
-
-        Returns (connection, should_close).
-        If inside a context manager (`with service:`), reuses `self._conn`
-        and returns should_close=False.
-        Otherwise opens a transient connection and returns should_close=True.
-        """
-        if self._conn is not None:
-            try:
-                self._conn.execute("SELECT 1").fetchone()
-            except sqlite3.ProgrammingError:
-                # sqlite3 does not expose a public connection.closed property.
-                # A closed connection raises ProgrammingError on any operation.
-                self._conn = get_readonly_connection(self.db_path)
-            return self._conn, False
+    def _get_connection(self) -> tuple[sqlite3.Connection, bool]:
+        """Return a fresh read-only connection that the caller must close."""
         return get_readonly_connection(self.db_path), True
 
     @staticmethod
@@ -157,9 +134,9 @@ class OntologyLookupService:
                     (curie,),
                 ).fetchall()
 
-            synonyms: List[str] = []
-            children_of: List[str] = []
-            tags_dict: Dict[str, List[str]] = defaultdict(list)
+            synonyms: list[str] = []
+            children_of: list[str] = []
+            tags_dict: dict[str, list[str]] = defaultdict(list)
 
             for d in details_rows:
                 k, v = d["tag_key"], d["tag_value"]
@@ -170,7 +147,7 @@ class OntologyLookupService:
                 else:
                     tags_dict[k].append(v)
 
-            final_tags: Dict[str, Union[str, List[str]]] = {}
+            final_tags: dict[str, None | str, list[str]] = {}
             for k, v_list in tags_dict.items():
                 if len(v_list) == 1:
                     final_tags[k] = v_list[0]
@@ -194,9 +171,9 @@ class OntologyLookupService:
     @cached_use_case
     def get_term_by_accession(
         self,
-        ontology: str,
+        ontology: None | str,
         accession: str,
-    ) -> Optional[TermResponse]:
+    ) -> None | TermResponse:
         """Lookup an ontology term by ontology short name and its CURIE or full IRI.
 
         Case-insensitive. Returns None if not found.
@@ -204,13 +181,20 @@ class OntologyLookupService:
         db, should_close = self._get_connection()
         try:
             cur = db.cursor()
+            ontology = ontology or ""
             clean_ontology = ontology.strip().lower()
             if accession.lower().startswith(("http://", "https://", "urn:")):
+                if not clean_ontology:
+                    response = self.find_curie(accession)
+                    if response:
+                        clean_ontology = response.curie.split(":")[0]
                 row = cur.execute(
                     "SELECT * FROM terms WHERE iri = ? AND ontology = ?",
                     (accession, clean_ontology),
                 ).fetchone()
             else:
+                if not clean_ontology and ":" in accession:
+                    clean_ontology = accession.split(":")[0]
                 row = cur.execute(
                     "SELECT * FROM terms WHERE curie = ? AND ontology = ?",
                     (accession, clean_ontology),
@@ -242,7 +226,7 @@ class OntologyLookupService:
         self,
         ontology: str,
         label: str,
-    ) -> Optional[TermResponse]:
+    ) -> None | TermResponse:
         """Exact match lookup by ontology and term label (case-insensitive)."""
         db, should_close = self._get_connection()
         try:
@@ -272,12 +256,12 @@ class OntologyLookupService:
     def search_by_label(
         self,
         label_or_synonym: str,
-        ontology: Optional[Union[str, List[str]]] = None,
-        parent_curie: Optional[Union[str, List[str]]] = None,
+        ontology: None | str | list[str] = None,
+        parent_curie: None | str | list[str] = None,
         search_in_synonyms: bool = True,
         limit: int = 50,
         offset: int = 0,
-    ) -> List[SearchTermSummary]:
+    ) -> list[SearchTermSummary]:
         """Match a complete label or synonym, with optional ontology/hierarchy filters.
 
         Matching is case-insensitive. Descriptions and partial matches are excluded.
@@ -287,7 +271,7 @@ class OntologyLookupService:
         if not exact_query:
             return []
 
-        ontologies: List[str] = []
+        ontologies: list[str] = []
         if ontology:
             if isinstance(ontology, str):
                 ontologies = [o.strip().lower() for o in ontology.split(",") if o.strip()]
@@ -295,7 +279,7 @@ class OntologyLookupService:
                 for item in ontology:
                     ontologies.extend([o.strip().lower() for o in item.split(",") if o.strip()])
 
-        parents: List[str] = []
+        parents: list[str] = []
         if parent_curie:
             if isinstance(parent_curie, str):
                 parents = [p.strip() for p in parent_curie.split(",") if p.strip()]
@@ -319,15 +303,15 @@ class OntologyLookupService:
             "      AND t.ontology = label_candidates.ontology",
             "      AND t.label = ?",
         ]
-        params: List[Any] = [fts_query, exact_query]
+        params: list[Any] = [fts_query, exact_query]
         if search_in_synonyms:
             sql_parts.extend(
                 [
                     "    UNION ALL",
-                    "    SELECT t.curie, t.iri, t.ontology, t.label, "
+                    "    SELECT t.curie, t.iri, t.ontology, t.label, ",
                     "synonym_candidates.matched_synonym, 1.0 AS rank",
                     "    FROM (",
-                    "        SELECT synonym.curie, synonym.ontology, synonym.tag_value "
+                    "        SELECT synonym.curie, synonym.ontology, synonym.tag_value ",
                     "AS matched_synonym",
                     "        FROM term_details synonym",
                     "        WHERE synonym.tag_key = 'synonym'",
@@ -392,32 +376,32 @@ class OntologyLookupService:
     def _fts_search(
         self,
         query: str,
-        ontology: Optional[Union[str, List[str]]] = None,
-        parent_curie: Optional[Union[str, List[str]]] = None,
+        ontology: None | str | list[str] = None,
+        parent_curie: None | str | list[str] = None,
         limit: int = 50,
         offset: int = 0,
-    ) -> List[SearchTermSummary]:
+    ) -> list[SearchTermSummary]:
         """Run prefix full-text search across labels, synonyms, and descriptions."""
         sanitized_q = self.sanitize_fts_query(query)
-        ontologies: List[str] = []
+        ontologies: list[str] = []
         if ontology:
             values = [ontology] if isinstance(ontology, str) else ontology
             for item in values:
                 ontologies.extend([o.strip().lower() for o in item.split(",") if o.strip()])
 
-        parents: List[str] = []
+        parents: list[str] = []
         if parent_curie:
             values = [parent_curie] if isinstance(parent_curie, str) else parent_curie
             for item in values:
                 parents.extend([p.strip() for p in item.split(",") if p.strip()])
 
-        sql_parts: List[str] = [
+        sql_parts: list[str] = [
             "SELECT DISTINCT t.curie, t.iri, t.ontology, t.label, f.rank",
             "FROM terms_fts f",
-            "JOIN terms t ON f.curie = t.curie COLLATE NOCASE "
+            "JOIN terms t ON f.curie = t.curie COLLATE NOCASE ",
             "AND f.ontology = t.ontology COLLATE NOCASE",
         ]
-        params: List[Any] = []
+        params: list[Any] = []
         if parents:
             sql_parts.append("JOIN term_details d ON t.curie = d.curie AND t.ontology = d.ontology")
         sql_parts.append("WHERE terms_fts MATCH ?")
@@ -443,8 +427,8 @@ class OntologyLookupService:
         db, should_close = self._get_connection()
         try:
             rows = db.execute("\n".join(sql_parts), params).fetchall()
-            seen: Set[Tuple[str, str]] = set()
-            results: List[SearchTermSummary] = []
+            seen: set[tuple[str, str]] = set()
+            results: list[SearchTermSummary] = []
             for row in rows:
                 identity = (row["curie"].casefold(), row["ontology"].casefold())
                 if identity not in seen:
@@ -469,7 +453,7 @@ class OntologyLookupService:
         self,
         iri: str,
         ontology: None | str = None,
-    ) -> Optional[CurieResolutionResponse]:
+    ) -> None | CurieResolutionResponse:
         """Resolve a full IRI to its primary CURIE within an ontology (case-insensitive)."""
         db, should_close = self._get_connection()
         try:
@@ -499,10 +483,10 @@ class OntologyLookupService:
         self,
         tag_key: str,
         tag_value: str,
-        ontology: Optional[str] = None,
+        ontology: None | str = None,
         limit: int = 50,
         offset: int = 0,
-    ) -> List[SearchTermSummary]:
+    ) -> list[SearchTermSummary]:
         """Search ontology terms by arbitrary key-value details/tags (case-insensitive)."""
         sql = """
         SELECT DISTINCT t.curie, t.iri, t.ontology, t.label
@@ -510,7 +494,7 @@ class OntologyLookupService:
         JOIN term_details tg ON t.curie = tg.curie AND t.ontology = tg.ontology
         WHERE tg.tag_key = ? AND tg.tag_value = ?
         """
-        params: List[Any] = [tag_key, tag_value]
+        params: list[Any] = [tag_key, tag_value]
 
         if ontology:
             sql += " AND t.ontology = ?"
@@ -542,10 +526,10 @@ class OntologyLookupService:
     def get_children(
         self,
         parent_curie: str,
-        ontology: Optional[str] = None,
+        ontology: None | str = None,
         limit: int = 50,
         offset: int = 0,
-    ) -> List[SearchTermSummary]:
+    ) -> list[SearchTermSummary]:
         """Retrieve terms that are recursive children of the specified parent CURIE."""
         return self.search_by_tag(
             tag_key="child-of",
@@ -556,7 +540,7 @@ class OntologyLookupService:
         )
 
     @cached_use_case
-    def get_indexed_parent_terms(self) -> List[str]:
+    def get_indexed_parent_terms(self) -> list[str]:
         """List distinct parent CURIEs referenced by indexed ``child-of`` tags."""
         db, should_close = self._get_connection()
         try:
@@ -572,7 +556,7 @@ class OntologyLookupService:
 
     # --- Use Cases 8: List all ontologies
     @cached_use_case
-    def list_ontologies(self) -> List[OntologyInfo]:
+    def list_ontologies(self) -> list[OntologyInfo]:
         """List all installed ontologies with metadata and term counts."""
         db, should_close = self._get_connection()
         try:
@@ -619,7 +603,7 @@ class OntologyLookupService:
 
     # --- Use Cases 9: get ontology info
     @cached_use_case
-    def get_ontology(self, ontology: str) -> Optional[OntologyInfo]:
+    def get_ontology(self, ontology: str) -> None | OntologyInfo:
         """Lookup metadata for a specific ontology short name."""
         db, should_close = self._get_connection()
         try:
@@ -684,11 +668,11 @@ class OntologyLookupService:
     def freetext_search(
         self,
         query: str,
-        ontology: Optional[Union[str, List[str]]] = None,
-        parent_curie: Optional[Union[str, List[str]]] = None,
+        ontology: None | str | list[str] = None,
+        parent_curie: None | str | list[str] = None,
         limit: int = 50,
         offset: int = 0,
-    ) -> List[SearchTermSummary]:
+    ) -> list[SearchTermSummary]:
         """Free-text search across labels, synonyms, and definitions using FTS5
 
         with support for single or list inputs for ontology and parent_curie.
@@ -707,7 +691,7 @@ class OntologyLookupService:
         self,
         curie: str,
         ontology: None | str = None,
-    ) -> Optional[IriResolutionResponse]:
+    ) -> None | IriResolutionResponse:
         """Resolve a full IRI to its primary IRI within an ontology
         (case-insensitive)."""
         db, should_close = self._get_connection()

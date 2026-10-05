@@ -2,7 +2,7 @@ import io
 import json
 import sqlite3
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any
 
 from ontology_lookup.loader import (
     JsonOntologyLoader,
@@ -11,7 +11,7 @@ from ontology_lookup.loader import (
     iri_to_curie,
 )
 
-SAMPLE_MS_DICT: Dict[str, Any] = {
+SAMPLE_MS_DICT: dict[str, Any] = {
     "ontologies": [
         {
             "ontologyId": "ms",
@@ -118,7 +118,7 @@ def test_loader_ingestion_and_hierarchy(tmp_path: Path) -> None:
     cur = conn.cursor()
 
     # 1. Verify terms table
-    term_rows: List[sqlite3.Row] = cur.execute("SELECT * FROM terms ORDER BY curie").fetchall()
+    term_rows: list[sqlite3.Row] = cur.execute("SELECT * FROM terms ORDER BY curie").fetchall()
     assert len(term_rows) == 5
     curies = [r["curie"] for r in term_rows]
     assert "MS:1000463" in curies
@@ -152,7 +152,7 @@ def test_loader_ingestion_and_hierarchy(tmp_path: Path) -> None:
     assert len(children_000) == 0
 
     # 3. Verify synonyms
-    synonyms: List[Tuple[str, str]] = [
+    synonyms: list[tuple[str, str]] = [
         (r["curie"], r["tag_value"])
         for r in cur.execute(
             "SELECT curie, tag_value FROM term_details WHERE tag_key = 'synonym'"

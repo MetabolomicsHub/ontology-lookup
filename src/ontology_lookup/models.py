@@ -1,5 +1,3 @@
-from typing import Dict, List, Optional, Union
-
 from pydantic import BaseModel, Field
 
 
@@ -15,8 +13,8 @@ class TermRecord(BaseModel):
 class SearchTermSummary(TermRecord):
     """Compact search result, including the synonym that matched when applicable."""
 
-    rank: Optional[float] = None
-    matched_synonym: Optional[str] = Field(
+    rank: None | float = None
+    matched_synonym: None | str = Field(
         default=None,
         description="Synonym that matched the search query, or null for non-synonym matches",
     )
@@ -25,12 +23,12 @@ class SearchTermSummary(TermRecord):
 class TermResponse(TermRecord):
     """Full ontology term details including aggregated synonyms, hierarchy, and tags."""
 
-    synonyms: List[str] = Field(default_factory=list)
-    children_of: List[str] = Field(
+    synonyms: list[str] = Field(default_factory=list)
+    children_of: list[str] = Field(
         default_factory=list,
         description="Target parent CURIEs that this term is a descendant of",
     )
-    tags: Dict[str, Union[str, List[str]]] = Field(
+    tags: dict[str, None | str, list[str]] = Field(
         default_factory=dict,
         description="Key-value metadata annotations associated with the term",
     )
@@ -60,25 +58,25 @@ class OntologyInfo(BaseModel):
     """Metadata describing an installed ontology."""
 
     ontology: str
-    name: Optional[str] = None
-    description: Optional[str] = None
-    source_uri: Optional[str] = None
-    prefix: Optional[str] = None
-    version: Optional[str] = None
-    term_count: Optional[int] = None
+    name: None | str = None
+    description: None | str = None
+    source_uri: None | str = None
+    prefix: None | str = None
+    version: None | str = None
+    term_count: None | int = None
     num_of_terms: int = 0
     num_of_obsoletes: int = 0
     num_of_details: int = 0
-    iri_prefix: Optional[str] = None
+    iri_prefix: None | str = None
 
 
 class DatabaseInfo(BaseModel):
     """Metadata describing the database."""
 
     created_time: str
-    updated_time: Optional[str] = None
-    created_by: Optional[str] = None
-    updated_by: Optional[str] = None
+    updated_time: None | str = None
+    created_by: None | str = None
+    updated_by: None | str = None
 
 
 class TagOperationRequest(BaseModel):
@@ -92,7 +90,7 @@ class TagUpdateRequest(BaseModel):
     """Payload to update a tag value for a term."""
 
     tag_value: str = Field(..., description="New tag value")
-    old_value: Optional[str] = Field(None, description="Optional previous value to target")
+    old_value: None | str = Field(None, description="Optional previous value to target")
 
 
 class TagOperationResponse(BaseModel):
@@ -118,4 +116,4 @@ class OntologyMutationResponse(BaseModel):
     ontology: str
     action: str
     terms_affected: int
-    details_affected: Optional[int] = None
+    details_affected: None | int = None

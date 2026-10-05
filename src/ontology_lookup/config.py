@@ -1,8 +1,9 @@
 """Configuration for creating and populating ontology databases."""
 
+from __future__ import annotations
+
 import os
 from pathlib import Path
-from typing import Optional, Union
 
 from dotenv import dotenv_values
 from pydantic import BaseModel, ConfigDict, Field
@@ -24,7 +25,7 @@ class DatabaseCreationConfig(BaseModel):
     batch_size: int = Field(default=DEFAULT_BATCH_SIZE, gt=0)
 
     @classmethod
-    def from_env(cls, env_file: Optional[Union[str, Path]] = None) -> "DatabaseCreationConfig":
+    def from_env(cls, env_file: None | str | Path = None) -> DatabaseCreationConfig:
         """Load defaults from the project .env file, overridden by process environment."""
         default_env_file = Path(__file__).resolve().parents[2] / ".env"
         values = dotenv_values(env_file or default_env_file)

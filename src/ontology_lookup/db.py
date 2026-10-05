@@ -1,7 +1,7 @@
 import os
 import sqlite3
+from collections.abc import Generator
 from pathlib import Path
-from typing import Generator, Optional
 
 from ontology_lookup.config import DEFAULT_DATABASE_CONFIG
 
@@ -49,7 +49,7 @@ def get_readonly_connection(
     return conn
 
 
-def get_db(db_path: Optional[str] = None) -> Generator[sqlite3.Connection, None, None]:
+def get_db(db_path: None | str = None) -> Generator[sqlite3.Connection]:
     """FastAPI dependency yielding a thread-safe read-only connection."""
     target_path = db_path or os.environ.get("ONTOLOGY_DB_PATH", DEFAULT_DB_PATH)
     conn = get_readonly_connection(target_path)

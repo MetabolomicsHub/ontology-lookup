@@ -7,7 +7,7 @@ name = "ontology-lookup"
 version = "0.1.0"
 description = "High-performance, size-optimized local ontology lookup engine"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.100.0",
     "uvicorn>=0.20.0",
@@ -15,6 +15,7 @@ dependencies = [
     "ijson>=3.3.0",
     "python-dotenv>=1.0.0",
     "cachetools>=5.3.0",
+    "httpx2>=2.13.1",
 ]
 
 [project.optional-dependencies]
@@ -55,10 +56,9 @@ where = ["src"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py312"
+target-version = "py314"
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "UP", "B"]
-ignore = ["UP006", "UP035", "UP007", "UP045"]
-
+extend-select = ["E4", "E7", "E9", "F", "I", "G", "SLF", "PTH", "Q", "T"]
+ignore = [  "T201", "SLF001"]
 fixable = ["ALL"]

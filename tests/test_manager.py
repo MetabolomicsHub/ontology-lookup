@@ -1,7 +1,7 @@
 import json
 import sqlite3
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any
 
 import pytest
 
@@ -10,7 +10,7 @@ from ontology_lookup.manager import (
     OntologyDatabaseManager,
 )
 
-SAMPLE_MS_DATA: Dict[str, Any] = {
+SAMPLE_MS_DATA: dict[str, Any] = {
     "ontologies": [
         {
             "ontologyId": "ms",
@@ -41,7 +41,7 @@ SAMPLE_MS_DATA: Dict[str, Any] = {
     ]
 }
 
-SAMPLE_OBI_DATA: Dict[str, Any] = {
+SAMPLE_OBI_DATA: dict[str, Any] = {
     "ontologies": [
         {
             "ontologyId": "obi",
@@ -72,7 +72,7 @@ SAMPLE_OBI_DATA: Dict[str, Any] = {
     ]
 }
 
-SAMPLE_OBI_UPDATED_DATA: Dict[str, Any] = {
+SAMPLE_OBI_UPDATED_DATA: dict[str, Any] = {
     "ontologies": [
         {
             "ontologyId": "obi",
@@ -112,13 +112,13 @@ def mock_json_dir(tmp_path: Path) -> Path:
     json_dir = tmp_path / "mock_ontologies"
     json_dir.mkdir()
 
-    with open(json_dir / "ms.json", "w") as f:
+    with (json_dir / "ms.json").open("w") as f:
         json.dump(SAMPLE_MS_DATA, f)
 
-    with open(json_dir / "obi.json", "w") as f:
+    with (json_dir / "obi.json").open("w") as f:
         json.dump(SAMPLE_OBI_DATA, f)
 
-    with open(json_dir / "empty.json", "w") as f:
+    with (json_dir / "empty.json").open("w") as f:
         json.dump({"ontologies": []}, f)
 
     return json_dir
@@ -152,11 +152,11 @@ def test_load_directory_and_list_installed(tmp_path: Path, mock_json_dir: Path) 
     assert results["obi"]["terms"] == 3
     assert "empty" not in results  # empty skipped by default
 
-    installed: List[Dict[str, Any]] = mgr.list_installed_ontologies()
+    installed: list[dict[str, Any]] = mgr.list_installed_ontologies()
     assert len(installed) == 2
-    onts = {item["ontology"] for item in installed}
-    assert "ms" in onts
-    assert "obi" in onts
+    ontologies = {item["ontology"] for item in installed}
+    assert "ms" in ontologies
+    assert "obi" in ontologies
 
     # Check prefix, description, source_uri fields
     ms_info = next(item for item in installed if item["ontology"] == "ms")
@@ -191,12 +191,12 @@ def test_update_ontology_in_place(tmp_path: Path, mock_json_dir: Path) -> None:
     mgr = OntologyDatabaseManager(db_path=db_file, default_input_dir=mock_json_dir)
 
     mgr.load_directory(clean=True)
-
+    file = mock_json_dir / "obi.json"
     # Overwrite obi.json with updated content
-    with open(mock_json_dir / "obi.json", "w") as f:
+    with file.open("w") as f:
         json.dump(SAMPLE_OBI_UPDATED_DATA, f)
 
-    terms_cnt, details_cnt = mgr.update_ontology("obi")
+    terms_cnt, _ = mgr.update_ontology("obi")
     assert terms_cnt == 3
 
     # Check updated label in SQLite

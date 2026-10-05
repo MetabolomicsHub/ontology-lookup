@@ -1,5 +1,6 @@
 import os
-from typing import Annotated, Generator, List, Optional
+from collections.abc import Generator
+from typing import Annotated
 
 from fastapi import Body, Depends, FastAPI, HTTPException, Query, status
 from fastapi import Path as PathParam
@@ -22,7 +23,7 @@ from ontology_lookup.models import (
 from ontology_lookup.service import OntologyLookupService
 
 
-def create_app(db_path: Optional[str] = None) -> FastAPI:
+def create_app(db_path: None | str = None) -> FastAPI:
     """FastAPI application factory for the Ontology Lookup Service."""
     resolved_path = db_path or os.getenv("ONTOLOGY_DB_PATH", ".db/ontology_lookup.db")
 
@@ -32,16 +33,15 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         version="0.1.0",
     )
 
-    def get_service() -> Generator[OntologyLookupService, None, None]:
-        """Dependency yielding an OntologyLookupService with an open connection context."""
-        with OntologyLookupService(db_path=resolved_path) as svc:
-            yield svc
+    def get_service() -> Generator[OntologyLookupService]:
+        """Dependency yielding a stateless OntologyLookupService."""
+        yield OntologyLookupService(db_path=resolved_path)
 
-    def get_manager() -> Generator[OntologyDatabaseManager, None, None]:
+    def get_manager() -> Generator[OntologyDatabaseManager]:
         """Dependency yielding an OntologyDatabaseManager for write/mutation operations."""
         yield OntologyDatabaseManager(db_path=resolved_path)
 
-    def _infer_ontology(acc: str) -> Optional[str]:
+    def _infer_ontology(acc: str) -> None | str:
         clean = acc.strip()
         if ":" in clean and not clean.startswith(("http://", "https://", "urn:")):
             return clean.split(":", 1)[0].lower()
@@ -96,7 +96,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         accession: Annotated[str, PathParam()],
         tag: Annotated[TagOperationRequest, Body()],
         ontology: Annotated[
-            Optional[str], Query(description="Optional ontology identifier to scope tag")
+            None | str, Query(description="Optional ontology identifier to scope tag")
         ] = None,
     ) -> TagOperationResponse:
         """Associate a key-value tag with a specific term."""
@@ -132,7 +132,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         tag_key: Annotated[str, PathParam()],
         payload: Annotated[TagUpdateRequest, Body()],
         ontology: Annotated[
-            Optional[str], Query(description="Optional ontology identifier to scope tag")
+            None | str, Query(description="Optional ontology identifier to scope tag")
         ] = None,
     ) -> TagOperationResponse:
         """Update an existing tag value for a term."""
@@ -168,10 +168,10 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         accession: Annotated[str, PathParam()],
         tag_key: Annotated[str, PathParam()],
         tag_value: Annotated[
-            Optional[str], Query(description="Optional specific tag value to delete")
+            None | str, Query(description="Optional specific tag value to delete")
         ] = None,
         ontology: Annotated[
-            Optional[str], Query(description="Optional ontology identifier to scope tag")
+            None | str, Query(description="Optional ontology identifier to scope tag")
         ] = None,
     ) -> TagDeleteResponse:
         """Delete one or all tags matching tag_key for a term."""
@@ -202,7 +202,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         accession: Annotated[str, PathParam()],
         service: Annotated[OntologyLookupService, Depends(get_service)],
         ontology: Annotated[
-            Optional[str], Query(description="Optional ontology short name override")
+            None | str, Query(description="Optional ontology short name override")
         ] = None,
     ) -> TermResponse:
         """Lookup an ontology term by its CURIE (e.g. MS:1000463) or full IRI.
@@ -228,7 +228,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
     # --- Use Cases 3 & 4: Exact match on labels and synonyms (+ parent filter) ---
     @app.get(
         "/search",
-        response_model=List[SearchTermSummary],
+        response_model=list[SearchTermSummary],
         summary="Exact match on labels or synonyms",
     )
     def search_terms(
@@ -236,14 +236,14 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         q: Annotated[str, Query(min_length=1, description="Exact label or synonym")],
         search_in_synonyms: Annotated[bool, Query(description="Include synonym matches")] = True,
         ontology: Annotated[
-            Optional[List[str]], Query(description="Optional; repeat for multiple ontologies")
+            None | list[str], Query(description="Optional; repeat for multiple ontologies")
         ] = None,
         parent_curie: Annotated[
-            Optional[List[str]], Query(description="Optional filter by parent CURIE(s)")
+            None | list[str], Query(description="Optional filter by parent CURIE(s)")
         ] = None,
         limit: Annotated[int, Query(ge=1, le=500, description="Max results to return")] = 50,
         offset: Annotated[int, Query(ge=0, description="Offset for pagination")] = 0,
-    ) -> List[SearchTermSummary]:
+    ) -> list[SearchTermSummary]:
         """Find complete, case-insensitive label or synonym matches."""
         return service.search_by_label(
             label_or_synonym=q,
@@ -277,21 +277,21 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
     # --- Freetext Search ---
     @app.get(
         "/search/freetext",
-        response_model=List[SearchTermSummary],
+        response_model=list[SearchTermSummary],
         summary="Freetext search across labels, synonyms, and definitions",
     )
     def freetext_search(
         q: Annotated[str, Query(min_length=1, description="Freetext search query")],
         service: Annotated[OntologyLookupService, Depends(get_service)],
         ontology: Annotated[
-            Optional[List[str]], Query(description="Optional; repeat for multiple ontologies")
+            None | list[str], Query(description="Optional; repeat for multiple ontologies")
         ] = None,
         parent_curie: Annotated[
-            Optional[List[str]], Query(description="Optional filter by parent CURIE(s)")
+            None | list[str], Query(description="Optional filter by parent CURIE(s)")
         ] = None,
         limit: Annotated[int, Query(ge=1, le=500, description="Max results to return")] = 50,
         offset: Annotated[int, Query(ge=0, description="Offset for pagination")] = 0,
-    ) -> List[SearchTermSummary]:
+    ) -> list[SearchTermSummary]:
         """Full-text freetext search across term labels, synonyms, and definitions."""
         return service.freetext_search(
             query=q,
@@ -304,7 +304,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
     # --- Use Case 6: Key-value tag search ---
     @app.get(
         "/search/tags",
-        response_model=List[SearchTermSummary],
+        response_model=list[SearchTermSummary],
         summary="Search terms by key-value metadata tags",
     )
     def search_by_tag(
@@ -313,10 +313,10 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         ],
         tag_value: Annotated[str, Query(description="Tag value to match")],
         service: Annotated[OntologyLookupService, Depends(get_service)],
-        ontology: Annotated[Optional[str], Query(description="Optional ontology filter")] = None,
+        ontology: Annotated[None | str, Query(description="Optional ontology filter")] = None,
         limit: Annotated[int, Query(ge=1, le=500, description="Max results")] = 50,
         offset: Annotated[int, Query(ge=0, description="Offset")] = 0,
-    ) -> List[SearchTermSummary]:
+    ) -> list[SearchTermSummary]:
         """Search ontology terms by arbitrary key-value details/tags (case-insensitive)."""
         return service.search_by_tag(
             tag_key=tag_key,
@@ -336,7 +336,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         iri: Annotated[str, Query(description="Full IRI of the term")],
         service: Annotated[OntologyLookupService, Depends(get_service)],
         ontology: Annotated[
-            Optional[str], Query(description="Optional ontology name (e.g. 'ms')")
+            None | str, Query(description="Optional ontology name (e.g. 'ms')")
         ] = None,
     ) -> CurieResolutionResponse:
         """Resolve a full IRI to its primary CURIE (case-insensitive)."""
@@ -357,7 +357,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
     def find_iri(
         curie: Annotated[str, Query(description="CURIE of the term")],
         service: Annotated[OntologyLookupService, Depends(get_service)],
-        ontology: Annotated[Optional[str], Query(description="Optional ontology filter")] = None,
+        ontology: Annotated[None | str, Query(description="Optional ontology filter")] = None,
     ) -> IriResolutionResponse:
         """Resolve a CURIE to its IRI, optionally scoped to an ontology."""
         result = service.find_iri(curie=curie, ontology=ontology)
@@ -371,16 +371,16 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
     # --- Convenience: Children of parent term ---
     @app.get(
         "/children/{parent_curie:path}",
-        response_model=List[SearchTermSummary],
+        response_model=list[SearchTermSummary],
         summary="Get child terms of parent CURIE",
     )
     def get_children(
         parent_curie: Annotated[str, PathParam()],
         service: Annotated[OntologyLookupService, Depends(get_service)],
-        ontology: Annotated[Optional[str], Query(description="Optional ontology filter")] = None,
+        ontology: Annotated[None | str, Query(description="Optional ontology filter")] = None,
         limit: Annotated[int, Query(ge=1, le=500, description="Max results")] = 50,
         offset: Annotated[int, Query(ge=0, description="Offset")] = 0,
-    ) -> List[SearchTermSummary]:
+    ) -> list[SearchTermSummary]:
         """Get terms that are recursive children of the given parent CURIE."""
         return service.get_children(
             parent_curie=parent_curie,
@@ -397,24 +397,24 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
 
     @app.get(
         "/parent-terms",
-        response_model=List[str],
+        response_model=list[str],
         summary="List indexed hierarchy parent CURIEs",
     )
     def get_indexed_parent_terms(
         service: Annotated[OntologyLookupService, Depends(get_service)],
-    ) -> List[str]:
+    ) -> list[str]:
         """List parent CURIEs referenced by indexed child-of hierarchy tags."""
         return service.get_indexed_parent_terms()
 
     # --- Ontologies list endpoint ---
     @app.get(
         "/ontologies",
-        response_model=List[OntologyInfo],
+        response_model=list[OntologyInfo],
         summary="List all installed ontologies",
     )
     def list_ontologies(
         service: Annotated[OntologyLookupService, Depends(get_service)],
-    ) -> List[OntologyInfo]:
+    ) -> list[OntologyInfo]:
         """List all ontologies present in the database with metadata."""
         return service.list_ontologies()
 
@@ -475,10 +475,10 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         ontology: Annotated[str, PathParam()],
         manager: Annotated[OntologyDatabaseManager, Depends(get_manager)],
         source_dir: Annotated[
-            Optional[str], Query(description="Optional directory containing ontology JSON")
+            None | str, Query(description="Optional directory containing ontology JSON")
         ] = None,
         source_file: Annotated[
-            Optional[str], Query(description="Optional explicit JSON file path")
+            None | str, Query(description="Optional explicit JSON file path")
         ] = None,
     ) -> OntologyMutationResponse:
         """Add or refresh an individual ontology from JSON source."""

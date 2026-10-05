@@ -1,8 +1,7 @@
 import logging
-import os
 import sqlite3
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any
 
 from ontology_lookup.config import DEFAULT_DATABASE_CONFIG, DatabaseCreationConfig
 from ontology_lookup.db import enable_wal_mode, get_write_connection
@@ -37,32 +36,33 @@ class OntologyDatabaseManager:
 
     def __init__(
         self,
-        db_path: Optional[Union[str, Path]] = None,
-        default_input_dir: Optional[Union[str, Path]] = None,
-        target_parents: Optional[List[str]] = None,
-        batch_size: Optional[int] = None,
-        config: Optional[DatabaseCreationConfig] = None,
+        db_path: None | str | Path = None,
+        default_input_dir: None | str | Path = None,
+        target_parents: None | list[str] = None,
+        batch_size: None | int = None,
+        config: None | DatabaseCreationConfig = None,
     ) -> None:
         config = config or DEFAULT_DATABASE_CONFIG
-        self.db_path = str(db_path if db_path is not None else config.database_path)
+        self.db_path_str = str(db_path if db_path is not None else config.database_path)
+        self.db_file_path = Path(self.db_path_str)
         self.default_input_dir = Path(
             default_input_dir if default_input_dir is not None else config.source_directory
         )
-        self.target_parents: List[str] = (
+        self.target_parents: list[str] = (
             list(target_parents) if target_parents is not None else list(config.parent_terms)
         )
         self.batch_size = batch_size if batch_size is not None else config.batch_size
 
     def list_available_ontologies(
         self,
-        source_dir: Optional[Union[str, Path]] = None,
-    ) -> List[Dict[str, Any]]:
+        source_dir: None | str | Path = None,
+    ) -> list[dict[str, Any]]:
         """List all available ontology JSON files in the input directory."""
         target_dir = Path(source_dir) if source_dir is not None else self.default_input_dir
         if not target_dir.exists() or not target_dir.is_dir():
             return []
 
-        available: List[Dict[str, Any]] = []
+        available: list[dict[str, Any]] = []
         for p in sorted(target_dir.glob("*.json")):
             short_name = p.stem.lower()
             size_mb = p.stat().st_size / (1024 * 1024)
@@ -76,12 +76,12 @@ class OntologyDatabaseManager:
             )
         return available
 
-    def list_installed_ontologies(self) -> List[Dict[str, Any]]:
+    def list_installed_ontologies(self) -> list[dict[str, Any]]:
         """Query the SQLite database for currently installed ontologies and term counts."""
-        if not os.path.exists(self.db_path):
+        if not self.db_file_path.exists():
             return []
 
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path_str)
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
 
@@ -126,7 +126,7 @@ class OntologyDatabaseManager:
                 """
                 rows = cur.execute(query_fallback).fetchall()
 
-            results: List[Dict[str, Any]] = []
+            results: list[dict[str, Any]] = []
             for r in rows:
                 num_terms = r["num_of_terms"]
                 d_count = r["num_of_details"]
@@ -151,11 +151,11 @@ class OntologyDatabaseManager:
         finally:
             conn.close()
 
-    def get_database_info(self) -> Dict[str, Any]:
+    def get_database_info(self) -> dict[str, Any]:
         """Retrieve database metadata including creation, last updated, and creators."""
-        if not os.path.exists(self.db_path):
+        if not self.db_file_path.exists():
             return {}
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path_str)
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
         try:
@@ -175,19 +175,20 @@ class OntologyDatabaseManager:
                     "updated_by": row["updated_by"],
                 }
             return {}
-        except Exception:
+        except Exception as ex:  # noqa: BLE001
+            logger.warning("Error: %s", ex)
             return {}
         finally:
             conn.close()
 
     def load_directory(
         self,
-        source_dir: Optional[Union[str, Path]] = None,
-        ontologies: Optional[List[str]] = None,
-        target_parents: Optional[List[str]] = None,
+        source_dir: None | str | Path = None,
+        ontologies: None | list[str] = None,
+        target_parents: None | list[str] = None,
         clean: bool = False,
         skip_empty: bool = True,
-    ) -> Dict[str, Dict[str, int]]:
+    ) -> dict[str, dict[str, int]]:
         """Process JSON files in the source directory and ingest into SQLite database.
 
         JSON file names correspond to ontology short names (e.g. ms.json -> 'ms').
@@ -211,18 +212,18 @@ class OntologyDatabaseManager:
             logger.error("Input ontology directory not found: %s", target_dir)
             raise FileNotFoundError(f"Input ontology directory not found: {target_dir}")
 
-        if clean and os.path.exists(self.db_path):
-            logger.info("Cleaning existing database at '%s'", self.db_path)
-            os.remove(self.db_path)
+        if clean and self.db_file_path.exists():
+            logger.info("Cleaning existing database at '%s'", self.db_path_str)
+            self.db_file_path.unlink(missing_ok=True)
 
-        conn = get_write_connection(self.db_path)
+        conn = get_write_connection(self.db_path_str)
         initialize_schema(conn)
         conn.close()
 
         # Find candidate json files
         all_json_files = {p.stem.lower(): p for p in sorted(target_dir.glob("*.json"))}
 
-        target_names: List[str]
+        target_names: list[str]
         if ontologies:
             target_names = [o.strip().lower() for o in ontologies if o.strip()]
         else:
@@ -236,10 +237,10 @@ class OntologyDatabaseManager:
             ", ".join(target_names),
         )
 
-        results: Dict[str, Dict[str, int]] = {}
+        results: dict[str, dict[str, int]] = {}
         active_parents = target_parents if target_parents is not None else self.target_parents
         loader = JsonOntologyLoader(
-            db_path=self.db_path,
+            db_path=self.db_path_str,
             target_parents=active_parents,
             batch_size=self.batch_size,
         )
@@ -278,7 +279,7 @@ class OntologyDatabaseManager:
 
             if skip_empty and terms_cnt == 0:
                 # Remove empty ontology record from ontologies table
-                conn_clean = get_write_connection(self.db_path)
+                conn_clean = get_write_connection(self.db_path_str)
                 try:
                     conn_clean.execute("DELETE FROM ontologies WHERE ontology = ?", (name,))
                     conn_clean.commit()
@@ -313,22 +314,22 @@ class OntologyDatabaseManager:
             len(results),
             total_terms,
             total_details,
-            self.db_path,
+            self.db_path_str,
         )
 
         return results
 
     def optimize(self, vacuum: bool = True) -> None:
         """Update SQLite planner statistics and optionally reclaim unused pages."""
-        logger.info("Optimizing database '%s' (enabling WAL mode)...", self.db_path)
-        enable_wal_mode(self.db_path)
-        vac_conn = sqlite3.connect(self.db_path)
+        logger.info("Optimizing database '%s' (enabling WAL mode)...", self.db_path_str)
+        enable_wal_mode(self.db_path_str)
+        vac_conn = sqlite3.connect(self.db_path_str)
         try:
-            logger.info("Optimizing database '%s' optimize.", self.db_path)
+            logger.info("Optimizing database '%s' optimize.", self.db_path_str)
 
             vac_conn.execute("PRAGMA optimize;")
             if vacuum:
-                logger.info("Vacuuming database '%s'.", self.db_path)
+                logger.info("Vacuuming database '%s'.", self.db_path_str)
                 vac_conn.execute("VACUUM;")
             else:
                 logger.info("Skipping VACUUM for clean database build.")
@@ -337,17 +338,18 @@ class OntologyDatabaseManager:
 
     def load_file(
         self,
-        file_path: Union[str, Path],
-        ontology_name: Optional[str] = None,
-        target_parents: Optional[List[str]] = None,
+        file_path: None | str,
+        Path,
+        ontology_name: None | str = None,
+        target_parents: None | list[str] = None,
         delete_existing: bool = True,
-    ) -> Tuple[int, int]:
+    ) -> tuple[int, int]:
         """Ingest a single ontology JSON file into the database."""
         ont_label = ontology_name or Path(file_path).stem.lower()
         logger.info("[%s] Ingesting single ontology file '%s'...", ont_label, file_path)
         active_parents = target_parents if target_parents is not None else self.target_parents
         loader = JsonOntologyLoader(
-            db_path=self.db_path,
+            db_path=self.db_path_str,
             target_parents=active_parents,
             batch_size=self.batch_size,
         )
@@ -368,10 +370,10 @@ class OntologyDatabaseManager:
     def update_ontology(
         self,
         ontology_name: str,
-        source_dir: Optional[Union[str, Path]] = None,
-        file_path: Optional[Union[str, Path]] = None,
-        target_parents: Optional[List[str]] = None,
-    ) -> Tuple[int, int]:
+        source_dir: None | str | Path = None,
+        file_path: None | str | Path = None,
+        target_parents: None | list[str] = None,
+    ) -> tuple[int, int]:
         """Update a single ontology from either an explicit file path or by finding
 
         <ontology_name>.json in the source directory.
@@ -393,7 +395,7 @@ class OntologyDatabaseManager:
         print(f"[{clean_name}] Updating from {final_file}...")
         active_parents = target_parents if target_parents is not None else self.target_parents
         loader = JsonOntologyLoader(
-            db_path=self.db_path,
+            db_path=self.db_path_str,
             target_parents=active_parents,
             batch_size=self.batch_size,
         )
@@ -415,16 +417,18 @@ class OntologyDatabaseManager:
     def delete_ontology(self, ontology_name: str) -> int:
         """Completely remove an ontology, its details, and its full-text search entries."""
         clean_key = ontology_name.lower().strip()
-        if not os.path.exists(self.db_path):
-            logger.warning("Database '%s' does not exist; cannot delete ontology.", self.db_path)
+        if not self.db_file_path.exists():
+            logger.warning(
+                "Database '%s' does not exist; cannot delete ontology.", self.db_path_str
+            )
             return 0
 
         logger.info(
             "[%s] Start deleting ontology from database '%s'...",
             clean_key,
-            self.db_path,
+            self.db_path_str,
         )
-        conn = get_write_connection(self.db_path)
+        conn = get_write_connection(self.db_path_str)
         cur = conn.cursor()
         try:
             row = cur.execute(
@@ -445,7 +449,7 @@ class OntologyDatabaseManager:
                 "[%s] Delete result: removed %d terms and associated data from '%s'.",
                 clean_key,
                 count,
-                self.db_path,
+                self.db_path_str,
             )
             return count
         finally:
@@ -456,14 +460,14 @@ class OntologyDatabaseManager:
         curie: str,
         tag_key: str,
         tag_value: str,
-        ontology: Optional[str] = None,
+        ontology: None | str = None,
     ) -> bool:
         """Add a key-value tag to a specific term."""
         clean_curie = curie.strip()
         clean_key = tag_key.strip()
         clean_val = tag_value.strip()
 
-        conn = get_write_connection(self.db_path)
+        conn = get_write_connection(self.db_path_str)
         cur = conn.cursor()
         try:
             if ontology:
@@ -479,7 +483,7 @@ class OntologyDatabaseManager:
                         clean_ont,
                     )
                     return False
-                target_onts = [clean_ont]
+                target_ontologies = [clean_ont]
             else:
                 rows = cur.execute(
                     "SELECT ontology FROM terms WHERE curie = ?",
@@ -488,9 +492,9 @@ class OntologyDatabaseManager:
                 if not rows:
                     logger.warning("Term '%s' not found; cannot add tag.", clean_curie)
                     return False
-                target_onts = [r[0] for r in rows]
+                target_ontologies = [r[0] for r in rows]
 
-            for ont in target_onts:
+            for ont in target_ontologies:
                 cur.execute(
                     """
                     INSERT OR IGNORE INTO term_details (curie, ontology, tag_key, tag_value)
@@ -511,19 +515,19 @@ class OntologyDatabaseManager:
         curie: str,
         tag_key: str,
         new_value: str,
-        old_value: Optional[str] = None,
-        ontology: Optional[str] = None,
+        old_value: None | str = None,
+        ontology: None | str = None,
     ) -> bool:
         """Update a tag value for a given term and tag key."""
         clean_curie = curie.strip()
         clean_key = tag_key.strip()
         clean_new = new_value.strip()
 
-        conn = get_write_connection(self.db_path)
+        conn = get_write_connection(self.db_path_str)
         cur = conn.cursor()
         try:
             where_clauses = ["curie = ?", "tag_key = ?"]
-            params: List[Any] = [clean_new, clean_curie, clean_key]
+            params: list[Any] = [clean_new, clean_curie, clean_key]
             if ontology:
                 where_clauses.append("ontology = ?")
                 params.append(ontology.strip().lower())
@@ -547,18 +551,18 @@ class OntologyDatabaseManager:
         self,
         curie: str,
         tag_key: str,
-        tag_value: Optional[str] = None,
-        ontology: Optional[str] = None,
+        tag_value: None | str = None,
+        ontology: None | str = None,
     ) -> int:
         """Delete tag(s) for a given term."""
         clean_curie = curie.strip()
         clean_key = tag_key.strip()
 
-        conn = get_write_connection(self.db_path)
+        conn = get_write_connection(self.db_path_str)
         cur = conn.cursor()
         try:
             where_clauses = ["curie = ?", "tag_key = ?"]
-            params: List[Any] = [clean_curie, clean_key]
+            params: list[Any] = [clean_curie, clean_key]
             if ontology:
                 where_clauses.append("ontology = ?")
                 params.append(ontology.strip().lower())
@@ -580,12 +584,12 @@ class OntologyDatabaseManager:
 
     def create_database(
         self,
-        source_dir: Optional[Union[str, Path]] = None,
-        ontologies: Optional[List[str]] = None,
-        target_parents: Optional[List[str]] = None,
+        source_dir: None | str | Path = None,
+        ontologies: None | list[str] = None,
+        target_parents: None | list[str] = None,
         clean: bool = True,
         skip_empty: bool = True,
-    ) -> Dict[str, Dict[str, int]]:
+    ) -> dict[str, dict[str, int]]:
         """Create database from ontologies in the source directory.
 
         If ontologies are not defined (None or empty), all ontologies in the directory are added.
@@ -603,7 +607,7 @@ class OntologyDatabaseManager:
         """
         logger.info(
             "create_database invoked on '%s' (clean=%s, ontologies=%s)",
-            self.db_path,
+            self.db_path_str,
             clean,
             ontologies,
         )
@@ -617,14 +621,14 @@ class OntologyDatabaseManager:
 
 
 def create_database(
-    db_path: Optional[Union[str, Path]] = None,
-    source_dir: Optional[Union[str, Path]] = None,
-    ontologies: Optional[List[str]] = None,
-    target_parents: Optional[List[str]] = None,
+    db_path: None | str | Path = None,
+    source_dir: None | str | Path = None,
+    ontologies: None | list[str] = None,
+    target_parents: None | list[str] = None,
     clean: bool = True,
-    batch_size: Optional[int] = None,
-    config: Optional[DatabaseCreationConfig] = None,
-) -> Dict[str, Dict[str, int]]:
+    batch_size: None | int = None,
+    config: None | DatabaseCreationConfig = None,
+) -> dict[str, dict[str, int]]:
     """Create database from ontologies in the source directory.
 
     If ontologies are not defined (None or empty), all ontologies in the directory are added.
@@ -669,17 +673,3 @@ def set_basic_logging_config(level: int = logging.INFO) -> None:
         datefmt="%d/%b/%Y %H:%M:%S",
         handlers=[handler],
     )
-
-
-if __name__ == "__main__":
-    set_basic_logging_config()
-    # create_database(
-    #     clean=True,
-    #     config=DatabaseCreationConfig(
-    #         database_path=".db/ontology_lookup.db",
-    #         source_directory=".cache/ontology_jsons",
-    #         parent_terms=DEFAULT_PARENT_TERMS,
-    #     ),
-    # )
-    manager = OntologyDatabaseManager()
-    manager.optimize()

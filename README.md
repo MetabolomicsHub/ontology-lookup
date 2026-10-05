@@ -157,7 +157,7 @@ uv run pytest -q
                      v (Direct / Embedded)                           v (Network / HTTP)
        +-------------------------------+               +-------------------------------+
        |    OntologyLookupService      |               |      FastAPI Web Service      |
-       |  - Reusable context manager   |               |  - URI `mode=ro` concurrency  |
+       |  - Fresh connection per query |               |  - URI `mode=ro` concurrency  |
        |  - B-Tree index scans (NOCASE)|               |  - 2 GB mmap_size             |
        |  - Precomputed child-of tags  |               |  - Sub-millisecond endpoints  |
        +-------------------------------+               +-------------------------------+
@@ -600,23 +600,37 @@ uv run ontology-lookup get-term-by-accession --ontology obi --accession OBI:0200
 
 #### API Examples
 
+Service methods open and close a read-only connection for each operation. For direct
+database access, use `get_connection()` as a context manager:
+
 ```python
 from ontology_lookup.service import OntologyLookupService
 
-with OntologyLookupService(db_path=".db/ontology_lookup.db") as svc:
-    # Example 1: Lookup by CURIE
-    term1 = svc.get_term_by_accession(ontology="ms", accession="MS:1000031")
-    print(term1.label, term1.synonyms, term1.children_of)
+svc = OntologyLookupService(db_path=".db/ontology_lookup.db")
+with svc.get_connection() as conn:
+    row = conn.execute("SELECT COUNT(*) FROM terms").fetchone()
+    print(row[0])
+```
 
-    # Example 2: Lookup by lowercase CURIE
-    term2 = svc.get_term_by_accession(ontology="ms", accession="ms:1000449")
-    print(term2.curie, term2.label)
+Service use-case methods can be called directly:
 
-    # Example 3: Cross-referenced term lookup across ontologies
-    term_ms = svc.get_term_by_accession(ontology="ms", accession="OBI:0200114")
-    term_obi = svc.get_term_by_accession(ontology="obi", accession="OBI:0200114")
-    print(f"MS:  {term_ms.curie} -> {term_ms.label}")
-    print(f"OBI: {term_obi.curie} -> {term_obi.label} (tags: {list(term_obi.tags.keys())})")
+```python
+from ontology_lookup.service import OntologyLookupService
+
+svc = OntologyLookupService(db_path=".db/ontology_lookup.db")
+# Example 1: Lookup by CURIE
+term1 = svc.get_term_by_accession(ontology="ms", accession="MS:1000031")
+print(term1.label, term1.synonyms, term1.children_of)
+
+# Example 2: Lookup by lowercase CURIE
+term2 = svc.get_term_by_accession(ontology="ms", accession="ms:1000449")
+print(term2.curie, term2.label)
+
+# Example 3: Cross-referenced term lookup across ontologies
+term_ms = svc.get_term_by_accession(ontology="ms", accession="OBI:0200114")
+term_obi = svc.get_term_by_accession(ontology="obi", accession="OBI:0200114")
+print(f"MS:  {term_ms.curie} -> {term_ms.label}")
+print(f"OBI: {term_obi.curie} -> {term_obi.label} (tags: {list(term_obi.tags.keys())})")
 ```
 
 **REST API (HTTP)**:
@@ -657,18 +671,18 @@ uv run ontology-lookup get-term-by-label --ontology obi --label "assay" --db .db
 ```python
 from ontology_lookup.service import OntologyLookupService
 
-with OntologyLookupService(db_path=".db/ontology_lookup.db") as svc:
-    # Example 1: Exact label
-    term1 = svc.get_term_by_exact_label(ontology="ms", label="instrument model")
-    print(term1.curie, term1.label)
+svc = OntologyLookupService(db_path=".db/ontology_lookup.db")
+# Example 1: Exact label
+term1 = svc.get_term_by_exact_label(ontology="ms", label="instrument model")
+print(term1.curie, term1.label)
 
-    # Example 2: Case-insensitive label
-    term2 = svc.get_term_by_exact_label(ontology="ms", label="LTQ ORBITRAP")
-    print(term2.curie, term2.label)
+# Example 2: Case-insensitive label
+term2 = svc.get_term_by_exact_label(ontology="ms", label="LTQ ORBITRAP")
+print(term2.curie, term2.label)
 
-    # Example 3: Match in OBI
-    term3 = svc.get_term_by_exact_label(ontology="obi", label="assay")
-    print(term3.curie if term3 else "Not found")
+# Example 3: Match in OBI
+term3 = svc.get_term_by_exact_label(ontology="obi", label="assay")
+print(term3.curie if term3 else "Not found")
 ```
 
 **REST API (HTTP)**:
@@ -708,20 +722,20 @@ uv run ontology-lookup search-by-label --label-or-synonym "instrument" -o ms,eda
 ```python
 from ontology_lookup.service import OntologyLookupService
 
-with OntologyLookupService(db_path=".db/ontology_lookup.db") as svc:
-    # Example 1: Search label
-    results1 = svc.search_by_label(label_or_synonym="orbitrap", ontology="ms", limit=5)
-    for r in results1:
-        print(f"[{r.curie}] {r.label}")
+svc = OntologyLookupService(db_path=".db/ontology_lookup.db")
+# Example 1: Search label
+results1 = svc.search_by_label(label_or_synonym="orbitrap", ontology="ms", limit=5)
+for r in results1:
+    print(f"[{r.curie}] {r.label}")
 
-    # Example 2: Search synonym
-    results2 = svc.search_by_label(label_or_synonym="MALDI", ontology="ms")
-    for r in results2:
-        print(f"[{r.curie}] {r.label}")
+# Example 2: Search synonym
+results2 = svc.search_by_label(label_or_synonym="MALDI", ontology="ms")
+for r in results2:
+    print(f"[{r.curie}] {r.label}")
 
-    # Example 3: Exact match across multiple ontologies
-    results3 = svc.search_by_label(label_or_synonym="instrument", ontology=["ms", "edam"], limit=10)
-    print(f"Found {len(results3)} results")
+# Example 3: Exact match across multiple ontologies
+results3 = svc.search_by_label(label_or_synonym="instrument", ontology=["ms", "edam"], limit=10)
+print(f"Found {len(results3)} results")
 ```
 
 **REST API (HTTP)**:
@@ -761,27 +775,27 @@ uv run ontology-lookup search-by-label --label-or-synonym "MALDI" -o ms -p MS:10
 ```python
 from ontology_lookup.service import OntologyLookupService
 
-with OntologyLookupService(db_path=".db/ontology_lookup.db") as svc:
-    # Example 1: Restrict search to instrument models
-    res1 = svc.search_by_label(
-        label_or_synonym="LTQ Orbitrap", ontology="ms", parent_curie="MS:1000031"
-    )
-    print(f"Found {len(res1)} matches under MS:1000031")
+svc = OntologyLookupService(db_path=".db/ontology_lookup.db")
+# Example 1: Restrict search to instrument models
+res1 = svc.search_by_label(
+    label_or_synonym="LTQ Orbitrap", ontology="ms", parent_curie="MS:1000031"
+)
+print(f"Found {len(res1)} matches under MS:1000031")
 
-    # Example 2: Search within ionization type hierarchy
-    res2 = svc.search_by_label(
-        label_or_synonym="electrospray ionization", ontology="ms", parent_curie="MS:1000008"
-    )
-    for r in res2:
-        print(r.curie, r.label)
+# Example 2: Search within ionization type hierarchy
+res2 = svc.search_by_label(
+    label_or_synonym="electrospray ionization", ontology="ms", parent_curie="MS:1000008"
+)
+for r in res2:
+    print(r.curie, r.label)
 
-    # Example 3: Filter across multiple parent CURIEs
-    res3 = svc.search_by_label(
-        label_or_synonym="MALDI",
-        ontology=["ms"],
-        parent_curie=["MS:1000031", "MS:1000008"],
-    )
-    print(f"Multi-parent matches: {len(res3)}")
+# Example 3: Filter across multiple parent CURIEs
+res3 = svc.search_by_label(
+    label_or_synonym="MALDI",
+    ontology=["ms"],
+    parent_curie=["MS:1000031", "MS:1000008"],
+)
+print(f"Multi-parent matches: {len(res3)}")
 ```
 
 **REST API (HTTP)**:
@@ -812,9 +826,9 @@ The same use case is available from the Python service and REST API:
 ```python
 from ontology_lookup.service import OntologyLookupService
 
-with OntologyLookupService(db_path=".db/ontology_lookup.db") as svc:
-    for parent_curie in svc.get_indexed_parent_terms():
-        print(parent_curie)
+svc = OntologyLookupService(db_path=".db/ontology_lookup.db")
+for parent_curie in svc.get_indexed_parent_terms():
+    print(parent_curie)
 ```
 
 ```bash
@@ -845,18 +859,18 @@ uv run ontology-lookup iri-to-curie --iri "http://edamontology.org/format_1915" 
 ```python
 from ontology_lookup.service import OntologyLookupService
 
-with OntologyLookupService(db_path=".db/ontology_lookup.db") as svc:
-    # Example 1: IRI to CURIE
-    res1 = svc.find_curie(iri="http://purl.obolibrary.org/obo/MS_1000031", ontology="ms")
-    print(f"CURIE: {res1.curie if res1 else 'Not found'}")
+svc = OntologyLookupService(db_path=".db/ontology_lookup.db")
+# Example 1: IRI to CURIE
+res1 = svc.find_curie(iri="http://purl.obolibrary.org/obo/MS_1000031", ontology="ms")
+print(f"CURIE: {res1.curie if res1 else 'Not found'}")
 
-    # Example 2: CURIE to IRI
-    res2 = svc.find_iri(curie="MS:1000031", ontology="ms")
-    print(f"IRI: {res2.iri if res2 else 'Not found'}")
+# Example 2: CURIE to IRI
+res2 = svc.find_iri(curie="MS:1000031", ontology="ms")
+print(f"IRI: {res2.iri if res2 else 'Not found'}")
 
-    # Example 3: Unscoped IRI resolution
-    res3 = svc.find_curie(iri="http://edamontology.org/format_1915")
-    print(f"Unscoped CURIE: {res3.curie if res3 else 'Not found'}")
+# Example 3: Unscoped IRI resolution
+res3 = svc.find_curie(iri="http://edamontology.org/format_1915")
+print(f"Unscoped CURIE: {res3.curie if res3 else 'Not found'}")
 ```
 
 **REST API (HTTP)**:
@@ -896,19 +910,19 @@ uv run ontology-lookup search-by-tag --tag-key custom_category --tag-value instr
 ```python
 from ontology_lookup.service import OntologyLookupService
 
-with OntologyLookupService(db_path=".db/ontology_lookup.db") as svc:
-    # Example 1: Search obsolete terms
-    obsoletes = svc.search_by_tag(tag_key="obsolete", tag_value="true", ontology="ms")
-    print(f"Found {len(obsoletes)} obsolete terms in MS")
+svc = OntologyLookupService(db_path=".db/ontology_lookup.db")
+# Example 1: Search obsolete terms
+obsoletes = svc.search_by_tag(tag_key="obsolete", tag_value="true", ontology="ms")
+print(f"Found {len(obsoletes)} obsolete terms in MS")
 
-    # Example 2: Search leaf terms
-    leaves = svc.search_by_tag(tag_key="is_leaf", tag_value="1", ontology="ms", limit=5)
-    for leaf in leaves:
-        print(f"Leaf term: {leaf.curie} - {leaf.label}")
+# Example 2: Search leaf terms
+leaves = svc.search_by_tag(tag_key="is_leaf", tag_value="1", ontology="ms", limit=5)
+for leaf in leaves:
+    print(f"Leaf term: {leaf.curie} - {leaf.label}")
 
-    # Example 3: Search by custom tag
-    custom_terms = svc.search_by_tag(tag_key="custom_category", tag_value="instrumentation")
-    print(f"Tagged terms count: {len(custom_terms)}")
+# Example 3: Search by custom tag
+custom_terms = svc.search_by_tag(tag_key="custom_category", tag_value="instrumentation")
+print(f"Tagged terms count: {len(custom_terms)}")
 ```
 
 **REST API (HTTP)**:
@@ -948,19 +962,19 @@ uv run ontology-lookup get-children --parent MS:1000031 -o ms --limit 5 --offset
 ```python
 from ontology_lookup.service import OntologyLookupService
 
-with OntologyLookupService(db_path=".db/ontology_lookup.db") as svc:
-    # Example 1: Children of instrument model
-    children1 = svc.get_children(parent_curie="MS:1000031", ontology="ms")
-    print(f"Children of MS:1000031: {len(children1)}")
+svc = OntologyLookupService(db_path=".db/ontology_lookup.db")
+# Example 1: Children of instrument model
+children1 = svc.get_children(parent_curie="MS:1000031", ontology="ms")
+print(f"Children of MS:1000031: {len(children1)}")
 
-    # Example 2: Children of ionization type
-    children2 = svc.get_children(parent_curie="MS:1000008", ontology="ms")
-    for child in children2:
-        print(f" -> {child.curie}: {child.label}")
+# Example 2: Children of ionization type
+children2 = svc.get_children(parent_curie="MS:1000008", ontology="ms")
+for child in children2:
+    print(f" -> {child.curie}: {child.label}")
 
-    # Example 3: Paginated children lookup
-    children3 = svc.get_children(parent_curie="MS:1000031", ontology="ms", limit=5, offset=5)
-    print(f"Page 2 count: {len(children3)}")
+# Example 3: Paginated children lookup
+children3 = svc.get_children(parent_curie="MS:1000031", ontology="ms", limit=5, offset=5)
+print(f"Page 2 count: {len(children3)}")
 ```
 
 **REST API (HTTP)**:
@@ -1000,24 +1014,24 @@ uv run ontology-lookup freetext-search -q "quadrupole" -o ms,edam -p MS:1000031 
 ```python
 from ontology_lookup.service import OntologyLookupService
 
-with OntologyLookupService(db_path=".db/ontology_lookup.db") as svc:
-    # Example 1: Search definition text
-    results1 = svc.freetext_search(query="Thermo Scientific", ontology="ms")
-    for r in results1:
-        print(f"[{r.curie}] {r.label} (Rank: {r.rank:.2f})")
+svc = OntologyLookupService(db_path=".db/ontology_lookup.db")
+# Example 1: Search definition text
+results1 = svc.freetext_search(query="Thermo Scientific", ontology="ms")
+for r in results1:
+    print(f"[{r.curie}] {r.label} (Rank: {r.rank:.2f})")
 
-    # Example 2: Multi-keyword ranked search
-    results2 = svc.freetext_search(query="orbitrap mass spectrometer", ontology=["ms"], limit=5)
-    for r in results2:
-        print(f"[{r.curie}] {r.label}")
+# Example 2: Multi-keyword ranked search
+results2 = svc.freetext_search(query="orbitrap mass spectrometer", ontology=["ms"], limit=5)
+for r in results2:
+    print(f"[{r.curie}] {r.label}")
 
-    # Example 3: Multi-ontology freetext search with parent filter
-    results3 = svc.freetext_search(
-        query="quadrupole",
-        ontology=["ms", "edam"],
-        parent_curie=["MS:1000031"],
-    )
-    print(f"Matches found: {len(results3)}")
+# Example 3: Multi-ontology freetext search with parent filter
+results3 = svc.freetext_search(
+    query="quadrupole",
+    ontology=["ms", "edam"],
+    parent_curie=["MS:1000031"],
+)
+print(f"Matches found: {len(results3)}")
 ```
 
 **REST API (HTTP)**:
