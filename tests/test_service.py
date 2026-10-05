@@ -1,5 +1,4 @@
 import io
-import sqlite3
 from collections.abc import Generator
 
 import pytest
@@ -34,17 +33,37 @@ def seeded_db_file(tmp_path_factory: pytest.TempPathFactory) -> str:
 
 @pytest.fixture
 def service(seeded_db_file: str) -> Generator[OntologyLookupService]:
-    """Create an OntologyLookupService for the seeded database."""
-    yield OntologyLookupService(db_path=seeded_db_file)
+    """Create and close an OntologyLookupService for the seeded database."""
+    svc = OntologyLookupService(db_path=seeded_db_file)
+    try:
+        yield svc
+    finally:
+        svc.close()
 
 
 def test_get_connection_lifecycle(seeded_db_file: str) -> None:
-    """Verify get_connection opens a fresh connection and closes it on exit."""
+    """Verify the default connection is reused and repaired after it is closed."""
     svc = OntologyLookupService(db_path=seeded_db_file)
-    with svc.get_connection() as conn:
-        assert conn.execute("SELECT 1").fetchone()[0] == 1
-    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
-        conn.execute("SELECT 1")
+    first = svc.get_default_connection()
+    assert first is svc.get_default_connection()
+    first.close()
+    replacement = svc.get_default_connection()
+    assert replacement is not first
+    assert replacement.execute("SELECT 1").fetchone()[0] == 1
+    svc.close()
+
+
+def test_use_case_keeps_supplied_connection_open(seeded_db_file: str) -> None:
+    """Use-case methods accept a caller-owned connection without closing it."""
+    svc = OntologyLookupService(db_path=seeded_db_file)
+    connection = svc.get_connection()
+    try:
+        term = svc.get_term_by_accession("ms", "MS:1000031", connection=connection)
+        assert term is not None
+        assert connection.execute("SELECT 1").fetchone()[0] == 1
+    finally:
+        connection.close()
+        svc.close()
 
 
 def test_use_case_1_get_term_by_accession(service: OntologyLookupService) -> None:

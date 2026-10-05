@@ -1,8 +1,8 @@
-# Ontology Lookup: High-Performance Multi-Ontology Engine
+# Ontology Lookup: Multi-Ontology Search Service
 
-A high-performance, size-optimized local ontology lookup engine, Python library, and REST API built with **Python**, **SQLite (FTS5 + WAL)**, and **FastAPI**.
+A size-optimized local ontology lookup engine, Python library, and REST API built with **Python**, **SQLite (FTS5 + WAL)**, and **FastAPI**.
 
-Designed for biological and scientific ontologies (such as HUPO PSI-MS, EDAM, OBI, GO, EFO, ChEBI, CL, DOID) hosted on EMBL-EBI OLS4 or OBO Foundry, this engine provides sub-millisecond, case-insensitive query resolution, hierarchical graph traversal, and concurrent read scalability.
+Designed for biological and scientific ontologies (such as HUPO PSI-MS, EDAM, OBI, GO, EFO, ChEBI, CL, DOID) hosted on EMBL-EBI OLS4, this engine provides sub-millisecond, case-insensitive query resolution, hierarchical graph traversal, and concurrent read scalability.
 
 ---
 
@@ -157,7 +157,7 @@ uv run pytest -q
                      v (Direct / Embedded)                           v (Network / HTTP)
        +-------------------------------+               +-------------------------------+
        |    OntologyLookupService      |               |      FastAPI Web Service      |
-       |  - Fresh connection per query |               |  - URI `mode=ro` concurrency  |
+       |  - Reusable default connection|               |  - URI `mode=ro` concurrency  |
        |  - B-Tree index scans (NOCASE)|               |  - 2 GB mmap_size             |
        |  - Precomputed child-of tags  |               |  - Sub-millisecond endpoints  |
        +-------------------------------+               +-------------------------------+
@@ -600,19 +600,23 @@ uv run ontology-lookup get-term-by-accession --ontology obi --accession OBI:0200
 
 #### API Examples
 
-Service methods open and close a read-only connection for each operation. For direct
-database access, use `get_connection()` as a context manager:
+Service methods use a reusable read-only default connection. The service creates it
+when initialized and validates it before use. Close the service when you are finished.
+Use `get_default_connection()` for direct access, or pass your own connection to a
+use-case method. A supplied connection stays open after the method returns:
 
 ```python
 from ontology_lookup.service import OntologyLookupService
 
 svc = OntologyLookupService(db_path=".db/ontology_lookup.db")
-with svc.get_connection() as conn:
-    row = conn.execute("SELECT COUNT(*) FROM terms").fetchone()
-    print(row[0])
+conn = svc.get_default_connection()
+row = conn.execute("SELECT COUNT(*) FROM terms").fetchone()
+print(row[0])
+term = svc.get_term_by_accession("ms", "MS:1000031", connection=conn)
+svc.close()
 ```
 
-Service use-case methods can be called directly:
+Service use-case methods can be called directly. Close the service after use:
 
 ```python
 from ontology_lookup.service import OntologyLookupService
@@ -631,6 +635,7 @@ term_ms = svc.get_term_by_accession(ontology="ms", accession="OBI:0200114")
 term_obi = svc.get_term_by_accession(ontology="obi", accession="OBI:0200114")
 print(f"MS:  {term_ms.curie} -> {term_ms.label}")
 print(f"OBI: {term_obi.curie} -> {term_obi.label} (tags: {list(term_obi.tags.keys())})")
+svc.close()
 ```
 
 **REST API (HTTP)**:
@@ -683,6 +688,7 @@ print(term2.curie, term2.label)
 # Example 3: Match in OBI
 term3 = svc.get_term_by_exact_label(ontology="obi", label="assay")
 print(term3.curie if term3 else "Not found")
+svc.close()
 ```
 
 **REST API (HTTP)**:
@@ -736,6 +742,7 @@ for r in results2:
 # Example 3: Exact match across multiple ontologies
 results3 = svc.search_by_label(label_or_synonym="instrument", ontology=["ms", "edam"], limit=10)
 print(f"Found {len(results3)} results")
+svc.close()
 ```
 
 **REST API (HTTP)**:
@@ -796,6 +803,7 @@ res3 = svc.search_by_label(
     parent_curie=["MS:1000031", "MS:1000008"],
 )
 print(f"Multi-parent matches: {len(res3)}")
+svc.close()
 ```
 
 **REST API (HTTP)**:
@@ -829,6 +837,7 @@ from ontology_lookup.service import OntologyLookupService
 svc = OntologyLookupService(db_path=".db/ontology_lookup.db")
 for parent_curie in svc.get_indexed_parent_terms():
     print(parent_curie)
+svc.close()
 ```
 
 ```bash
@@ -871,6 +880,7 @@ print(f"IRI: {res2.iri if res2 else 'Not found'}")
 # Example 3: Unscoped IRI resolution
 res3 = svc.find_curie(iri="http://edamontology.org/format_1915")
 print(f"Unscoped CURIE: {res3.curie if res3 else 'Not found'}")
+svc.close()
 ```
 
 **REST API (HTTP)**:
@@ -923,6 +933,7 @@ for leaf in leaves:
 # Example 3: Search by custom tag
 custom_terms = svc.search_by_tag(tag_key="custom_category", tag_value="instrumentation")
 print(f"Tagged terms count: {len(custom_terms)}")
+svc.close()
 ```
 
 **REST API (HTTP)**:
@@ -975,6 +986,7 @@ for child in children2:
 # Example 3: Paginated children lookup
 children3 = svc.get_children(parent_curie="MS:1000031", ontology="ms", limit=5, offset=5)
 print(f"Page 2 count: {len(children3)}")
+svc.close()
 ```
 
 **REST API (HTTP)**:
@@ -1032,6 +1044,7 @@ results3 = svc.freetext_search(
     parent_curie=["MS:1000031"],
 )
 print(f"Matches found: {len(results3)}")
+svc.close()
 ```
 
 **REST API (HTTP)**:

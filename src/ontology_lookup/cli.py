@@ -245,6 +245,7 @@ def freetext_search_command(args: argparse.Namespace) -> None:
         for r in results:
             rank_str = f"{r.rank:.2f}" if r.rank is not None else "N/A"
             print(f"{r.curie:<15} {r.ontology:<10} {r.label:<40} {rank_str:<8}")
+    svc.close()
 
 
 def lookup_command(args: argparse.Namespace) -> None:
@@ -302,6 +303,7 @@ def lookup_command(args: argparse.Namespace) -> None:
         print(json.dumps(result, indent=2))
     else:
         print(result.model_dump_json(indent=2))
+    svc.close()
 
 
 def serve_command(args: argparse.Namespace) -> None:

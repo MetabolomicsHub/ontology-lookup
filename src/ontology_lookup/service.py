@@ -3,10 +3,10 @@ from __future__ import annotations
 import re
 import sqlite3
 from collections import defaultdict
-from collections.abc import Callable, Generator
-from contextlib import contextmanager
+from collections.abc import Callable
 from copy import deepcopy
 from functools import wraps
+from inspect import signature
 from pathlib import Path
 from threading import RLock
 from typing import Any
@@ -49,14 +49,17 @@ def _normalize_cache_key(value: Any) -> Any:
 
 def _use_case_cache_key(method: Callable) -> Callable:
     """Create a cache key function scoped to a use-case method and database."""
+    method_signature = signature(method)
 
     def make_key(service: OntologyLookupService, *args: Any, **kwargs: Any) -> tuple:
         db_path = str(Path(service.db_path).expanduser().resolve())
+        bound_arguments = method_signature.bind_partial(service, *args, **kwargs)
+        bound_arguments.arguments.pop("self", None)
+        bound_arguments.arguments.pop("connection", None)
         return (
             method.__qualname__,
             db_path,
-            _normalize_cache_key(args),
-            _normalize_cache_key(kwargs),
+            _normalize_cache_key(bound_arguments.arguments),
         )
 
     return make_key
@@ -72,6 +75,12 @@ def cached_use_case(method: Callable) -> Callable:
 
     @wraps(method)
     def wrapped(service: OntologyLookupService, *args: Any, **kwargs: Any) -> Any:
+        # A supplied connection may contain caller-visible changes; execute against
+        # it directly instead of returning a cached result from the default database.
+        if kwargs.get("connection") is not None or any(
+            isinstance(arg, sqlite3.Connection) for arg in args
+        ):
+            return deepcopy(method(service, *args, **kwargs))
         # Return detached values so a caller cannot mutate shared cached results.
         return deepcopy(cached_method(service, *args, **kwargs))
 
@@ -81,25 +90,47 @@ def cached_use_case(method: Callable) -> Callable:
 class OntologyLookupService:
     """Service providing high-performance query methods for local ontology lookup use cases.
 
-    Each use case opens and closes its own read-only database connection. Use
-    :meth:`get_connection` when direct access to a connection is needed.
+    Maintains a default read-only connection and replaces it if it becomes invalid.
     """
 
     def __init__(self, db_path: str = ".db/ontology_lookup.db") -> None:
         self.db_path = db_path
+        self._default_connection: sqlite3.Connection | None = None
+        self._default_connection = self.get_connection()
 
-    @contextmanager
-    def get_connection(self) -> Generator[sqlite3.Connection]:
-        """Yield a new read-only connection and close it when the context exits."""
-        conn = get_readonly_connection(self.db_path)
-        try:
-            yield conn
-        finally:
-            conn.close()
+    def get_connection(self) -> sqlite3.Connection:
+        """Create a new read-only database connection."""
+        return get_readonly_connection(self.db_path)
 
-    def _get_connection(self) -> tuple[sqlite3.Connection, bool]:
-        """Return a fresh read-only connection that the caller must close."""
-        return get_readonly_connection(self.db_path), True
+    def get_default_connection(self) -> sqlite3.Connection:
+        """Return the default connection, replacing it if it is no longer usable."""
+        if self._default_connection is not None:
+            try:
+                self._default_connection.execute("SELECT 1").fetchone()
+            except sqlite3.ProgrammingError:
+                try:
+                    self._default_connection.close()
+                except sqlite3.Error:
+                    pass
+                self._default_connection = None
+        if self._default_connection is None:
+            self._default_connection = self.get_connection()
+        return self._default_connection
+
+    def close(self) -> None:
+        """Close the default connection and clear it from the service."""
+        if self._default_connection is not None:
+            self._default_connection.close()
+            self._default_connection = None
+
+    def _get_connection(
+        self,
+        connection: sqlite3.Connection | None = None,
+    ) -> tuple[sqlite3.Connection, bool]:
+        """Return a supplied connection or the default without closing either one."""
+        if connection is not None:
+            return connection, False
+        return self.get_default_connection(), False
 
     @staticmethod
     def sanitize_fts_query(q: str) -> str:
@@ -117,10 +148,11 @@ class OntologyLookupService:
     def assemble_term_response(
         self,
         term: TermRecord,
+        connection: sqlite3.Connection | None = None,
     ) -> TermResponse:
         """Fetch term details and assemble a full TermResponse."""
         curie = term.curie
-        db, should_close = self._get_connection()
+        db, should_close = self._get_connection(connection)
         try:
             details_cur = db.cursor()
             if term.ontology:
@@ -173,19 +205,20 @@ class OntologyLookupService:
         self,
         ontology: None | str,
         accession: str,
+        connection: sqlite3.Connection | None = None,
     ) -> None | TermResponse:
         """Lookup an ontology term by ontology short name and its CURIE or full IRI.
 
         Case-insensitive. Returns None if not found.
         """
-        db, should_close = self._get_connection()
+        db, should_close = self._get_connection(connection)
         try:
             cur = db.cursor()
             ontology = ontology or ""
             clean_ontology = ontology.strip().lower()
             if accession.lower().startswith(("http://", "https://", "urn:")):
                 if not clean_ontology:
-                    response = self.find_curie(accession)
+                    response = self.find_curie(accession, connection=connection)
                     if response:
                         clean_ontology = response.curie.split(":")[0]
                 row = cur.execute(
@@ -215,7 +248,7 @@ class OntologyLookupService:
                 ontology=row["ontology"],
                 label=row["label"],
             )
-            return self.assemble_term_response(term_rec)
+            return self.assemble_term_response(term_rec, connection=connection)
         finally:
             if should_close:
                 db.close()
@@ -226,9 +259,10 @@ class OntologyLookupService:
         self,
         ontology: str,
         label: str,
+        connection: sqlite3.Connection | None = None,
     ) -> None | TermResponse:
         """Exact match lookup by ontology and term label (case-insensitive)."""
-        db, should_close = self._get_connection()
+        db, should_close = self._get_connection(connection)
         try:
             cur = db.cursor()
             clean_ontology = ontology.strip().lower()
@@ -246,7 +280,7 @@ class OntologyLookupService:
                 ontology=row["ontology"],
                 label=row["label"],
             )
-            return self.assemble_term_response(term_rec)
+            return self.assemble_term_response(term_rec, connection=connection)
         finally:
             if should_close:
                 db.close()
@@ -261,6 +295,7 @@ class OntologyLookupService:
         search_in_synonyms: bool = True,
         limit: int = 50,
         offset: int = 0,
+        connection: sqlite3.Connection | None = None,
     ) -> list[SearchTermSummary]:
         """Match a complete label or synonym, with optional ontology/hierarchy filters.
 
@@ -355,7 +390,7 @@ class OntologyLookupService:
         sql_parts.extend(["ORDER BY rank, ontology, curie", "LIMIT ? OFFSET ?"])
         params.extend([limit, offset])
 
-        db, should_close = self._get_connection()
+        db, should_close = self._get_connection(connection)
         try:
             rows = db.execute("\n".join(sql_parts), params).fetchall()
             return [
@@ -380,6 +415,7 @@ class OntologyLookupService:
         parent_curie: None | str | list[str] = None,
         limit: int = 50,
         offset: int = 0,
+        connection: sqlite3.Connection | None = None,
     ) -> list[SearchTermSummary]:
         """Run prefix full-text search across labels, synonyms, and descriptions."""
         sanitized_q = self.sanitize_fts_query(query)
@@ -424,7 +460,7 @@ class OntologyLookupService:
         sql_parts.extend(["ORDER BY f.rank", "LIMIT ? OFFSET ?"])
         params.extend([limit, offset])
 
-        db, should_close = self._get_connection()
+        db, should_close = self._get_connection(connection)
         try:
             rows = db.execute("\n".join(sql_parts), params).fetchall()
             seen: set[tuple[str, str]] = set()
@@ -453,9 +489,10 @@ class OntologyLookupService:
         self,
         iri: str,
         ontology: None | str = None,
+        connection: sqlite3.Connection | None = None,
     ) -> None | CurieResolutionResponse:
         """Resolve a full IRI to its primary CURIE within an ontology (case-insensitive)."""
-        db, should_close = self._get_connection()
+        db, should_close = self._get_connection(connection)
         try:
             cur = db.cursor()
             ontology = ontology or ""
@@ -486,6 +523,7 @@ class OntologyLookupService:
         ontology: None | str = None,
         limit: int = 50,
         offset: int = 0,
+        connection: sqlite3.Connection | None = None,
     ) -> list[SearchTermSummary]:
         """Search ontology terms by arbitrary key-value details/tags (case-insensitive)."""
         sql = """
@@ -503,7 +541,7 @@ class OntologyLookupService:
         sql += " LIMIT ? OFFSET ?"
         params.extend([limit, offset])
 
-        db, should_close = self._get_connection()
+        db, should_close = self._get_connection(connection)
         try:
             cur = db.cursor()
             rows = cur.execute(sql, params).fetchall()
@@ -529,6 +567,7 @@ class OntologyLookupService:
         ontology: None | str = None,
         limit: int = 50,
         offset: int = 0,
+        connection: sqlite3.Connection | None = None,
     ) -> list[SearchTermSummary]:
         """Retrieve terms that are recursive children of the specified parent CURIE."""
         return self.search_by_tag(
@@ -537,12 +576,16 @@ class OntologyLookupService:
             ontology=ontology,
             limit=limit,
             offset=offset,
+            connection=connection,
         )
 
     @cached_use_case
-    def get_indexed_parent_terms(self) -> list[str]:
+    def get_indexed_parent_terms(
+        self,
+        connection: sqlite3.Connection | None = None,
+    ) -> list[str]:
         """List distinct parent CURIEs referenced by indexed ``child-of`` tags."""
-        db, should_close = self._get_connection()
+        db, should_close = self._get_connection(connection)
         try:
             rows = db.execute(
                 "SELECT DISTINCT tag_value FROM term_details "
@@ -556,9 +599,12 @@ class OntologyLookupService:
 
     # --- Use Cases 8: List all ontologies
     @cached_use_case
-    def list_ontologies(self) -> list[OntologyInfo]:
+    def list_ontologies(
+        self,
+        connection: sqlite3.Connection | None = None,
+    ) -> list[OntologyInfo]:
         """List all installed ontologies with metadata and term counts."""
-        db, should_close = self._get_connection()
+        db, should_close = self._get_connection(connection)
         try:
             cur = db.cursor()
 
@@ -603,9 +649,13 @@ class OntologyLookupService:
 
     # --- Use Cases 9: get ontology info
     @cached_use_case
-    def get_ontology(self, ontology: str) -> None | OntologyInfo:
+    def get_ontology(
+        self,
+        ontology: str,
+        connection: sqlite3.Connection | None = None,
+    ) -> None | OntologyInfo:
         """Lookup metadata for a specific ontology short name."""
-        db, should_close = self._get_connection()
+        db, should_close = self._get_connection(connection)
         try:
             cur = db.cursor()
             clean_ont = ontology.strip().lower()
@@ -672,6 +722,7 @@ class OntologyLookupService:
         parent_curie: None | str | list[str] = None,
         limit: int = 50,
         offset: int = 0,
+        connection: sqlite3.Connection | None = None,
     ) -> list[SearchTermSummary]:
         """Free-text search across labels, synonyms, and definitions using FTS5
 
@@ -683,6 +734,7 @@ class OntologyLookupService:
             parent_curie=parent_curie,
             limit=limit,
             offset=offset,
+            connection=connection,
         )
 
     # --- Use Case 11: Find IRI of an CURIE in an ontology ---
@@ -691,10 +743,11 @@ class OntologyLookupService:
         self,
         curie: str,
         ontology: None | str = None,
+        connection: sqlite3.Connection | None = None,
     ) -> None | IriResolutionResponse:
         """Resolve a full IRI to its primary IRI within an ontology
         (case-insensitive)."""
-        db, should_close = self._get_connection()
+        db, should_close = self._get_connection(connection)
         try:
             cur = db.cursor()
             ontology = ontology or ""
@@ -718,9 +771,12 @@ class OntologyLookupService:
 
     # --- Use Cases 15: Health check
     @cached_use_case
-    def get_health(self) -> HealthResponse:
+    def get_health(
+        self,
+        connection: sqlite3.Connection | None = None,
+    ) -> HealthResponse:
         """Health check reporting database status and term count."""
-        db, should_close = self._get_connection()
+        db, should_close = self._get_connection(connection)
         try:
             cur = db.cursor()
             row = cur.execute("SELECT COUNT(*) as cnt FROM terms").fetchone()
@@ -736,10 +792,13 @@ class OntologyLookupService:
 
     # --- Use Cases 16: get database info
     @cached_use_case
-    def get_database_info(self) -> DatabaseInfo:
+    def get_database_info(
+        self,
+        connection: sqlite3.Connection | None = None,
+    ) -> DatabaseInfo:
         """Retrieve database metadata including created_time,
         updated_time, and creators."""
-        db, should_close = self._get_connection()
+        db, should_close = self._get_connection(connection)
         try:
             cur = db.cursor()
             cols = [r[1] for r in cur.execute("PRAGMA table_info(database_info)").fetchall()]

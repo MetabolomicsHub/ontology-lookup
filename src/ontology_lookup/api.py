@@ -34,8 +34,12 @@ def create_app(db_path: None | str = None) -> FastAPI:
     )
 
     def get_service() -> Generator[OntologyLookupService]:
-        """Dependency yielding a stateless OntologyLookupService."""
-        yield OntologyLookupService(db_path=resolved_path)
+        """Yield an OntologyLookupService and close its default connection afterward."""
+        service = OntologyLookupService(db_path=resolved_path)
+        try:
+            yield service
+        finally:
+            service.close()
 
     def get_manager() -> Generator[OntologyDatabaseManager]:
         """Dependency yielding an OntologyDatabaseManager for write/mutation operations."""
