@@ -76,6 +76,20 @@ SAMPLE_MS_DICT: dict[str, Any] = {
                     "definition": [{"type": ["literal"], "value": "Deprecated term."}],
                     "isObsolete": True,
                 },
+                {
+                    "curie": {"type": ["literal"], "value": "MS:1001000"},
+                    "iri": "http://purl.obolibrary.org/obo/MS_1001000",
+                    "label": [{"type": ["literal"], "value": "preferred term"}],
+                    "http://www.w3.org/2004/02/skos/core#prefLabel": [
+                        {"type": ["literal"], "value": "preferred label"}
+                    ],
+                },
+                {
+                    "curie": {"type": ["literal"], "value": "MS:1001001"},
+                    "iri": "http://purl.obolibrary.org/obo/MS_1001001",
+                    "label": [{"type": ["literal"], "value": "same label"}],
+                    "prefLabel": [{"type": ["literal"], "value": "same label"}],
+                },
             ],
         }
     ]
@@ -110,7 +124,7 @@ def test_loader_ingestion_and_hierarchy(tmp_path: Path) -> None:
         clean_db=True,
     )
 
-    assert terms_count == 5
+    assert terms_count == 7
     assert details_count > 0
 
     conn = sqlite3.connect(db_file)
@@ -161,6 +175,8 @@ def test_loader_ingestion_and_hierarchy(tmp_path: Path) -> None:
     assert ("MS:1000031", "instrument config") in synonyms
     assert ("MS:1000031", "MALDI instrument") in synonyms
     assert ("MS:1000449", "Orbitrap") in synonyms
+    assert ("MS:1001000", "preferred label") in synonyms
+    assert ("MS:1001001", "same label") not in synonyms
 
     # 4. Verify obsolete tag
     obsolete_term = cur.execute(

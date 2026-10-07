@@ -268,7 +268,7 @@ class OntologyDatabaseManager:
                 json_path.name,
                 size_mb,
             )
-            print(f"[{name}] Ingesting from {json_path.name} ({size_mb:.2f} MB)...")
+            print(f"[{idx}/{len(target_names)}][{name}] Ingesting from {json_path.name} ({size_mb:.2f} MB)...")
 
             terms_cnt, details_cnt = loader.load_file(
                 source=json_path,
@@ -305,7 +305,7 @@ class OntologyDatabaseManager:
                 terms_cnt,
                 details_cnt,
             )
-            print(f"[{name}] Ingested {terms_cnt} terms and {details_cnt} details.")
+            print(f"[{idx}/{len(target_names)}] [{name}] Ingested {terms_cnt} terms and {details_cnt} details.")
         self.optimize(vacuum=not clean)
         total_terms = sum(r["terms"] for r in results.values())
         total_details = sum(r["details"] for r in results.values())

@@ -1,13 +1,23 @@
 {
     "cSpell.words": [
+        "cachetools",
+        "commitizen",
         "dotenv",
         "edamontology",
         "executemany",
+        "fastapi",
         "freetext",
+        "httpx",
+        "ijson",
         "jsons",
         "NOCASE",
         "obolibrary",
+        "pydantic",
+        "pyproject",
+        "pytest",
+        "setuptools",
         "UNINDEXED",
+        "uvicorn",
         "versioninfo",
         "versioniri"
     ]

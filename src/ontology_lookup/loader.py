@@ -5,6 +5,7 @@ import sqlite3
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import ijson
 
@@ -175,6 +176,12 @@ def extract_ontology_metadata(
             meta["version"] = m.group(1)
         else:
             meta["version"] = version_iri
+
+    version = meta["version"]
+    if version.lower().startswith(("http://", "https://")):
+        path_parts = [part for part in urlsplit(version).path.split("/") if part]
+        if path_parts:
+            meta["version"] = path_parts[-1]
 
     if not meta["name"]:
         meta["name"] = default_ontology.upper()
@@ -460,10 +467,20 @@ class JsonOntologyLoader:
                     or curie
                 )
 
+                # Preserve a distinct preferred label as an alternate searchable name.
+                # Ontology exports may encode it under either a compact key or a full IRI.
+                pref_label = extract_first_str(cls.get("prefLabel"))
+                if pref_label is None:
+                    pref_label = extract_first_str(
+                        cls.get("http://www.w3.org/2004/02/skos/core#prefLabel")
+                    )
+
                 terms_batch.append((curie, iri, target_ontology, label))
 
                 # Synonyms
                 synonyms_set: set[str] = set(extract_all_strs(cls.get("synonym")))
+                if pref_label and pref_label != label:
+                    synonyms_set.add(pref_label)
                 for k, v in cls.items():
                     if "synonym" in k.lower() and k not in (
                         "synonym",
