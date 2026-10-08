@@ -185,7 +185,9 @@ class OntologyLookupService:
                     final_tags[k] = v_list[0]
                 else:
                     final_tags[k] = v_list
-
+                if isinstance(final_tags[k], list):
+                    final_tags[k] = ". ".join([str(x) for x in final_tags[k]])
+                
             return TermResponse(
                 curie=term.curie,
                 iri=term.iri,
