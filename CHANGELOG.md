@@ -1,3 +1,10 @@
+## v0.1.5 (2026-10-08)
+
+### Fix
+
+- response error
+- term response error
+
 ## v0.1.4 (2026-10-07)
 
 ### Fix
