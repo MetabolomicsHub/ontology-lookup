@@ -180,7 +180,7 @@ def test_get_health(service: OntologyLookupService) -> None:
     """Test health check method."""
     health = service.get_health()
     assert health.status == "ok"
-    assert health.term_count == 5
+    assert health.term_count == 7
 
 
 def test_assemble_term_response_pydantic_model(service: OntologyLookupService) -> None:
@@ -208,18 +208,18 @@ def test_list_ontologies_and_database_info(service: OntologyLookupService) -> No
     assert ms_ont.prefix == "MS"
     assert ms_ont.name == "Mass Spectrometry Controlled Vocabulary"
     assert ms_ont.version == "4.2.2"
-    assert ms_ont.num_of_terms == 5
+    assert ms_ont.num_of_terms == 7
     assert ms_ont.num_of_obsoletes == 1
     assert ms_ont.num_of_details > 0
     assert ms_ont.iri_prefix == "http://purl.obolibrary.org/obo/MS_"
-    assert ms_ont.term_count == 5
+    assert ms_ont.term_count == 7
 
     single_ont = service.get_ontology("ms")
     assert single_ont is not None
     assert single_ont.ontology == "ms"
     assert single_ont.name == "Mass Spectrometry Controlled Vocabulary"
     assert single_ont.version == "4.2.2"
-    assert single_ont.num_of_terms == 5
+    assert single_ont.num_of_terms == 7
     assert single_ont.num_of_obsoletes == 1
     assert single_ont.iri_prefix == "http://purl.obolibrary.org/obo/MS_"
 

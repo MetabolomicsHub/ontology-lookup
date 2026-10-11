@@ -1,6 +1,6 @@
 repos:
 - repo: https://github.com/abravalheri/validate-pyproject
-  rev: v0.25
+  rev: '0.26'
   hooks:
   - id: validate-pyproject
 - repo: https://github.com/pre-commit/pre-commit-hooks
@@ -19,18 +19,18 @@ repos:
   - id: trailing-whitespace
     exclude: "tests/data/.+"
 - repo: https://github.com/lk16/detect-missing-init
-  rev: v0.1.6
+  rev: v0.1.9
   hooks:
   - id: detect-missing-init
     args: [ "--create", "--track", "--python-folders", "mztab_m_io" ]
 - repo: https://github.com/astral-sh/uv-pre-commit
   # uv version.
-  rev: 0.11.7
+  rev: 0.13.0
   hooks:
   - id: uv-lock
 
 - repo: https://github.com/astral-sh/ruff-pre-commit
-  rev: v0.15.11
+  rev: v0.17.0
   hooks:
   - id: ruff-check
     args:
@@ -39,7 +39,7 @@ repos:
     - I
   - id: ruff-format
 - repo: https://github.com/commitizen-tools/commitizen
-  rev: v4.13.10
+  rev: v4.19.2
   hooks:
   - id: commitizen
     stages: [ commit-msg ]

@@ -2,7 +2,7 @@ import io
 import json
 import sqlite3
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict, List
 
 from ontology_lookup.loader import (
     JsonOntologyLoader,
@@ -133,7 +133,7 @@ def test_loader_ingestion_and_hierarchy(tmp_path: Path) -> None:
 
     # 1. Verify terms table
     term_rows: list[sqlite3.Row] = cur.execute("SELECT * FROM terms ORDER BY curie").fetchall()
-    assert len(term_rows) == 5
+    assert len(term_rows) == 7
     curies = [r["curie"] for r in term_rows]
     assert "MS:1000463" in curies
     assert "MS:1000031" in curies
@@ -207,5 +207,119 @@ def test_loader_ingestion_and_hierarchy(tmp_path: Path) -> None:
     assert info_row is not None
     assert info_row["created_time"] is not None
     assert info_row["updated_time"] is not None
+
+    conn.close()
+
+
+def test_loader_individuals(tmp_path: Path) -> None:
+    """Test ingestion of individuals (such as from ROR) into terms and details."""
+    db_file = str(tmp_path / "test_individuals.db")
+    sample_ror_dict: Dict[str, Any] = {
+        "ontologies": [
+            {
+                "ontologyId": "ror",
+                "title": "Research Organization Registry",
+                "preferredPrefix": "ror",
+                "version": "2.0",
+                "numberOfClasses": {"type": ["literal"], "value": 1},
+                "numberOfIndividuals": {"type": ["literal"], "value": 2},
+                "classes": [
+                    {
+                        "curie": {"type": ["literal"], "value": "ror:class1"},
+                        "iri": "http://purl.obolibrary.org/obo/ror#class1",
+                        "label": [{"type": ["literal"], "value": "Organization Class"}],
+                        "isObsolete": False,
+                    }
+                ],
+                "individuals": [
+                    {
+                        "curie": {"type": ["literal"], "value": "ror:000025p04"},
+                        "iri": "https://ror.org/000025p04",
+                        "label": [
+                            {
+                                "type": ["literal"],
+                                "value": "Thailand Science Research and Innovation",
+                            }
+                        ],
+                        "http://www.geneontology.org/formats/oboInOwl#hasRelatedSynonym": [
+                            {"type": ["literal"], "value": "TSRI"}
+                        ],
+                        "http://purl.org/dc/terms/description": [
+                            {
+                                "type": ["literal"],
+                                "value": "Thailand research funding organization.",
+                            }
+                        ],
+                        "directParent": ["http://purl.obolibrary.org/obo/ror#class1"],
+                        "isObsolete": False,
+                    },
+                    {
+                        "curie": {"type": ["literal"], "value": "ror:00003g016"},
+                        "iri": "https://ror.org/00003g016",
+                        "label": [{"type": ["literal"], "value": "World Water Watch"}],
+                        "isObsolete": True,
+                    },
+                ],
+            }
+        ]
+    }
+
+    stream = io.BytesIO(json.dumps(sample_ror_dict).encode("utf-8"))
+    loader = JsonOntologyLoader(db_path=db_file)
+    terms_count, details_count = loader.load_file(
+        source=stream,
+        ontology_name="ror",
+        clean_db=True,
+    )
+
+    assert terms_count == 3
+    assert details_count > 0
+
+    conn = sqlite3.connect(db_file)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+
+    # 1. Verify terms table contains both class and individuals
+    rows: List[sqlite3.Row] = cur.execute(
+        "SELECT curie, label FROM terms ORDER BY curie"
+    ).fetchall()
+    curies = [r["curie"] for r in rows]
+    assert curies == ["ror:000025p04", "ror:00003g016", "ror:class1"]
+
+    # 2. Verify individual entity_type tag
+    ind_tags: List[str] = [
+        r["curie"]
+        for r in cur.execute(
+            "SELECT curie FROM term_details WHERE tag_key = 'entity_type' AND tag_value = 'individual'"
+        ).fetchall()
+    ]
+    assert set(ind_tags) == {"ror:000025p04", "ror:00003g016"}
+
+    # 3. Verify synonyms and definitions extracted from individual
+    syn_row = cur.execute(
+        "SELECT tag_value FROM term_details WHERE curie = 'ror:000025p04' AND tag_key = 'synonym'"
+    ).fetchone()
+    assert syn_row is not None
+    assert syn_row["tag_value"] == "TSRI"
+
+    desc_row = cur.execute(
+        "SELECT tag_value FROM term_details WHERE curie = 'ror:000025p04' AND tag_key = 'definition'"
+    ).fetchone()
+    assert desc_row is not None
+    assert desc_row["tag_value"] == "Thailand research funding organization."
+
+    # 4. Verify obsolete flag on individual
+    obs_row = cur.execute(
+        "SELECT tag_value FROM term_details WHERE curie = 'ror:00003g016' AND tag_key = 'obsolete'"
+    ).fetchone()
+    assert obs_row is not None
+    assert obs_row["tag_value"] == "true"
+
+    # 5. Verify FTS5 search on individuals
+    fts_rows = cur.execute(
+        "SELECT curie FROM terms_fts WHERE terms_fts MATCH '\"Thailand Science\"*'"
+    ).fetchall()
+    assert len(fts_rows) == 1
+    assert fts_rows[0]["curie"] == "ror:000025p04"
 
     conn.close()

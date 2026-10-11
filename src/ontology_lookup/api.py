@@ -2,8 +2,14 @@ import os
 from collections.abc import Generator
 from typing import Annotated
 
-from fastapi import Body, Depends, FastAPI, HTTPException, Query, status
-from fastapi import Path as PathParam
+try:
+    from fastapi import Body, Depends, FastAPI, HTTPException, Query, status
+    from fastapi import Path as PathParam
+except ImportError as exc:
+    raise ImportError(
+        "FastAPI dependencies are required to use ontology_lookup.api. "
+        "Please install them via: pip install 'ontology-lookup[fastapi]'"
+    ) from exc
 
 from ontology_lookup.manager import OntologyDatabaseManager
 from ontology_lookup.models import (

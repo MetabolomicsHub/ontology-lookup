@@ -3,6 +3,9 @@ from collections.abc import Generator
 from typing import Any
 
 import pytest
+
+pytest.importorskip("fastapi")
+
 from fastapi.testclient import TestClient
 
 from ontology_lookup.api import create_app
@@ -49,7 +52,7 @@ def test_health_endpoint(client: TestClient) -> None:
     assert response.status_code == 200
     data = response.json()
     assert data["status"] == "ok"
-    assert data["term_count"] == 5
+    assert data["term_count"] == 7
 
 
 def test_use_case_1_accession_curie_and_iri(client: TestClient) -> None:

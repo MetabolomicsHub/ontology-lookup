@@ -1,7 +1,7 @@
 import logging
 import sqlite3
 from pathlib import Path
-from typing import Any
+from typing import Any, List, Optional, Tuple, Union
 
 from ontology_lookup.config import DEFAULT_DATABASE_CONFIG, DatabaseCreationConfig
 from ontology_lookup.db import enable_wal_mode, get_write_connection
@@ -290,13 +290,13 @@ class OntologyDatabaseManager:
                     conn_clean.close()
 
                 logger.warning(
-                    "[%d/%d][%s] No classes found in '%s' (empty ontology). Skipping.",
+                    "[%d/%d][%s] No classes or individuals found in '%s' (empty ontology). Skipping.",
                     idx,
                     len(target_names),
                     name,
                     json_path.name,
                 )
-                print(f"[{name}] No classes found (empty ontology).")
+                print(f"[{name}] No terms found (empty ontology).")
                 continue
 
             results[name] = {"terms": terms_cnt, "details": details_cnt}
@@ -344,12 +344,11 @@ class OntologyDatabaseManager:
 
     def load_file(
         self,
-        file_path: None | str,
-        Path,
-        ontology_name: None | str = None,
-        target_parents: None | list[str] = None,
+        file_path: Optional[Union[str, Path]] = None,
+        ontology_name: Optional[str] = None,
+        target_parents: Optional[List[str]] = None,
         delete_existing: bool = True,
-    ) -> tuple[int, int]:
+    ) -> Tuple[int, int]:
         """Ingest a single ontology JSON file into the database."""
         ont_label = ontology_name or Path(file_path).stem.lower()
         logger.info("[%s] Ingesting single ontology file '%s'...", ont_label, file_path)

@@ -2,9 +2,8 @@ import io
 import logging
 import re
 import sqlite3
-from collections.abc import Iterable
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple, Union
 from urllib.parse import urlsplit
 
 import ijson
@@ -15,10 +14,10 @@ from ontology_lookup.schema import initialize_schema
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_TARGET_PARENTS: list[str] = list(DEFAULT_DATABASE_CONFIG.parent_terms)
+DEFAULT_TARGET_PARENTS: List[str] = list(DEFAULT_DATABASE_CONFIG.parent_terms)
 
 
-def extract_first_str(v: Any) -> None | str:
+def extract_first_str(v: Any) -> Optional[str]:
     """Recursively extract the first non-empty string from nested OLS value structures."""
     if v is None:
         return None
@@ -38,7 +37,7 @@ def extract_first_str(v: Any) -> None | str:
     return None
 
 
-def extract_all_strs(v: Any) -> list[str]:
+def extract_all_strs(v: Any) -> List[str]:
     """Recursively extract all non-empty strings from nested OLS value structures."""
     if v is None:
         return []
@@ -48,7 +47,7 @@ def extract_all_strs(v: Any) -> list[str]:
     if isinstance(v, (int, float)):
         return [str(v)]
     if isinstance(v, list):
-        out: list[str] = []
+        out: List[str] = []
         for item in v:
             out.extend(extract_all_strs(item))
         return out
@@ -72,12 +71,12 @@ def iri_to_curie(iri: str) -> str:
     return frag
 
 
-def build_parent_lookup(parents: Iterable[str]) -> dict[str, str]:
+def build_parent_lookup(parents: Iterable[str]) -> Dict[str, str]:
     """Map variants of target parent representations (CURIEs, IRIs, short forms)
 
     to their canonical target parent CURIE string.
     """
-    lookup: dict[str, str] = {}
+    lookup: Dict[str, str] = {}
     for p in parents:
         canonical = p.strip()
         if not canonical:
@@ -104,15 +103,17 @@ def build_parent_lookup(parents: Iterable[str]) -> dict[str, str]:
 def extract_ontology_metadata(
     fp: Any,
     default_ontology: str,
-) -> dict[str, str]:
+) -> Dict[str, Any]:
     """Extract ontology short name, title, description, source URI, prefix, and version."""
-    meta: dict[str, str] = {
+    meta: Dict[str, Any] = {
         "ontology": default_ontology,
         "name": "",
         "description": "",
         "source_uri": "",
         "prefix": default_ontology.upper(),
         "version": "",
+        "num_of_classes": None,
+        "num_of_individuals": None,
     }
     version_iri = ""
     if hasattr(fp, "seekable") and fp.seekable():
@@ -160,7 +161,32 @@ def extract_ontology_metadata(
                     and not version_iri
                 ):
                     version_iri = str(value).strip()
-                elif prefix == "ontologies.item.classes.item" and event == "start_map":
+                elif "numberofclasses" in prefix.lower() and event in (
+                    "number",
+                    "string",
+                    "literal",
+                ):
+                    try:
+                        meta["num_of_classes"] = int(value)
+                    except ValueError, TypeError:
+                        pass
+                elif "numberofindividuals" in prefix.lower() and event in (
+                    "number",
+                    "string",
+                    "literal",
+                ):
+                    try:
+                        meta["num_of_individuals"] = int(value)
+                    except ValueError, TypeError:
+                        pass
+                elif (
+                    prefix
+                    in (
+                        "ontologies.item.classes.item",
+                        "ontologies.item.individuals.item",
+                    )
+                    and event == "start_map"
+                ):
                     break
         except Exception as ex:  # noqa: BLE001
             logger.warning("Error: %s", ex)
@@ -190,7 +216,7 @@ def extract_ontology_metadata(
 
 
 def derive_iri_prefix(conn: sqlite3.Connection, ontology: str, preferred_prefix: str) -> str:
-    """Derive common base IRI prefix (e.g. 'http://purl.obolibrary.org/obo/MS_', 'http://edamontology.org/')."""
+    """Derive common base IRI prefix (e.g. 'http://purl.obolibrary.org/obo/MS_', 'https://ror.org/')."""
     cur = conn.cursor()
     cur.execute(
         "SELECT iri, curie FROM terms WHERE ontology = ? AND curie LIKE ? LIMIT 50",
@@ -198,7 +224,7 @@ def derive_iri_prefix(conn: sqlite3.Connection, ontology: str, preferred_prefix:
     )
     rows = cur.fetchall()
     if rows:
-        prefixes: set[str] = set()
+        prefixes: Set[str] = set()
         for iri, curie in rows:
             acc = curie.split(":", 1)[1]
             if iri.endswith(acc):
@@ -220,9 +246,9 @@ def derive_iri_prefix(conn: sqlite3.Connection, ontology: str, preferred_prefix:
 def update_ontology_stats(
     conn: sqlite3.Connection,
     ontology: str,
-    prefix: None | str = None,
-    version: None | str = None,
-    name: None | str = None,
+    prefix: Optional[str] = None,
+    version: Optional[str] = None,
+    name: Optional[str] = None,
 ) -> None:
     """Update num_of_terms, num_of_obsoletes, num_of_details, iri_prefix, version, and name."""
     cur = conn.cursor()
@@ -258,8 +284,8 @@ def update_ontology_stats(
 
     iri_prefix = derive_iri_prefix(conn, clean_ont, prefix)
 
-    extra_updates: list[str] = []
-    params: list[Any] = [num_terms, num_obsoletes, num_details, iri_prefix]
+    extra_updates: List[str] = []
+    params: List[Any] = [num_terms, num_obsoletes, num_details, iri_prefix]
 
     if version:
         extra_updates.append("version = ?")
@@ -308,30 +334,30 @@ class JsonOntologyLoader:
     def __init__(
         self,
         db_path: str,
-        target_parents: None | list[str] = None,
-        batch_size: None | int = None,
-        config=None,
+        target_parents: Optional[List[str]] = None,
+        batch_size: Optional[int] = None,
+        config: Any = None,
     ) -> None:
         config = config or DEFAULT_DATABASE_CONFIG
         self.db_path = str(db_path or config.database_path)
-        self.target_parents: list[str] = (
+        self.target_parents: List[str] = (
             list(target_parents) if target_parents is not None else list(config.parent_terms)
         )
         self.batch_size = batch_size or config.batch_size
 
     def load_file(
         self,
-        source: None | str | Path | io.BytesIO | io.BufferedReader,
-        ontology_name: None | str = None,
-        target_parents: None | list[str] = None,
+        source: Optional[Union[str, Path, io.BytesIO, io.BufferedReader]],
+        ontology_name: Optional[str] = None,
+        target_parents: Optional[List[str]] = None,
         delete_existing: bool = True,
         clean_db: bool = False,
-    ) -> tuple[int, int]:
-        """Ingest ontology classes from a JSON file into SQLite.
+    ) -> Tuple[int, int]:
+        """Ingest ontology classes and individuals from a JSON file into SQLite.
 
         Args:
             source: File path (str/Path) or binary stream (BytesIO/BufferedReader).
-            ontology_name: Ontology short name (e.g., 'ms', 'edam'). If not supplied,
+            ontology_name: Ontology short name (e.g., 'ms', 'edam', 'ror'). If not supplied,
                            inferred from the filename stem.
             target_parents: Optional list of target parent CURIEs for recursive child-of links.
                             Defaults to self.target_parents.
@@ -360,7 +386,7 @@ class JsonOntologyLoader:
 
         # Determine stream
         should_close = False
-        fp: None | io.BytesIO | io.BufferedReader
+        fp: Optional[Union[io.BytesIO, io.BufferedReader]]
         if isinstance(source, (str, Path)):
             src_path = Path(source).resolve()
             if not src_path.exists():
@@ -404,16 +430,17 @@ class JsonOntologyLoader:
         cur.execute("UPDATE database_info SET updated_time = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')")
         conn.commit()
 
-        terms_batch: list[tuple[str, str, str, str]] = []
-        details_batch: list[tuple[str, str, str, str]] = []
-        fts_batch: list[tuple[str, str, str, str, str]] = []
+        terms_batch: List[Tuple[str, str, str, str]] = []
+        details_batch: List[Tuple[str, str, str, str]] = []
+        fts_batch: List[Tuple[str, str, str, str, str]] = []
 
         total_terms = 0
         total_details = 0
 
         saw_child_flags = False
-        curies_in_file: list[str] = []
-        parent_refs: set[str] = set()
+        curies_in_file: List[str] = []
+        parent_refs: Set[str] = set()
+        seen_curies: Set[str] = set()
 
         def flush_batches() -> None:
             nonlocal total_terms, total_details
@@ -446,121 +473,156 @@ class JsonOntologyLoader:
             conn.commit()
 
         try:
-            # Stream classes directly using ijson
-            classes_iter = ijson.items(fp, "ontologies.item.classes.item")
-            for cls in classes_iter:
-                if not isinstance(cls, dict):
-                    continue
+            # Determine which entity arrays to stream (classes and/or individuals)
+            entity_paths: List[Tuple[str, str]] = []
+            if meta.get("num_of_classes") != 0:
+                entity_paths.append(("class", "ontologies.item.classes.item"))
+            if meta.get("num_of_individuals") != 0:
+                entity_paths.append(("individual", "ontologies.item.individuals.item"))
+            if not entity_paths:
+                entity_paths = [
+                    ("class", "ontologies.item.classes.item"),
+                    ("individual", "ontologies.item.individuals.item"),
+                ]
 
-                iri = extract_first_str(cls.get("iri")) or ""
-                curie = (
-                    extract_first_str(cls.get("curie"))
-                    or extract_first_str(cls.get("shortForm"))
-                    or iri_to_curie(iri)
-                )
-                if not curie:
-                    continue
+            for path_idx, (entity_kind, item_path) in enumerate(entity_paths):
+                if path_idx > 0:
+                    if hasattr(fp, "seekable") and fp.seekable():
+                        fp.seek(0)
+                    else:
+                        logger.warning(
+                            "Stream is not seekable; skipping additional entity path '%s'",
+                            item_path,
+                        )
+                        break
 
-                label = (
-                    extract_first_str(cls.get("label"))
-                    or extract_first_str(cls.get("http://www.w3.org/2000/01/rdf-schema#label"))
-                    or curie
-                )
+                for entity in ijson.items(fp, item_path):
+                    if not isinstance(entity, dict):
+                        continue
 
-                # Preserve a distinct preferred label as an alternate searchable name.
-                # Ontology exports may encode it under either a compact key or a full IRI.
-                pref_label = extract_first_str(cls.get("prefLabel"))
-                if pref_label is None:
-                    pref_label = extract_first_str(
-                        cls.get("http://www.w3.org/2004/02/skos/core#prefLabel")
+                    iri = extract_first_str(entity.get("iri")) or ""
+                    curie = (
+                        extract_first_str(entity.get("curie"))
+                        or extract_first_str(entity.get("shortForm"))
+                        or iri_to_curie(iri)
+                    )
+                    if not curie:
+                        continue
+
+                    if curie in seen_curies:
+                        continue
+                    seen_curies.add(curie)
+
+                    label = (
+                        extract_first_str(entity.get("label"))
+                        or extract_first_str(
+                            entity.get("http://www.w3.org/2000/01/rdf-schema#label")
+                        )
+                        or curie
                     )
 
-                terms_batch.append((curie, iri, target_ontology, label))
+                    # Preserve a distinct preferred label as an alternate searchable name.
+                    pref_label = extract_first_str(entity.get("prefLabel"))
+                    if pref_label is None:
+                        pref_label = extract_first_str(
+                            entity.get("http://www.w3.org/2004/02/skos/core#prefLabel")
+                        )
 
-                # Synonyms
-                synonyms_set: set[str] = set(extract_all_strs(cls.get("synonym")))
-                if pref_label and pref_label != label:
-                    synonyms_set.add(pref_label)
-                for k, v in cls.items():
-                    if "synonym" in k.lower() and k not in (
-                        "synonym",
-                        "synonymProperty",
-                    ):
-                        synonyms_set.update(extract_all_strs(v))
+                    terms_batch.append((curie, iri, target_ontology, label))
 
-                for syn in synonyms_set:
-                    details_batch.append((curie, target_ontology, "synonym", syn))
+                    if entity_kind == "individual":
+                        details_batch.append((curie, target_ontology, "entity_type", "individual"))
 
-                # Definitions
-                defs = set(extract_all_strs(cls.get("definition")))
-                defs.update(extract_all_strs(cls.get("http://purl.obolibrary.org/obo/IAO_0000115")))
-                defs.update(
-                    extract_all_strs(
-                        cls.get("http://www.geneontology.org/formats/oboInOwl#hasDefinition")
+                    # Synonyms
+                    synonyms_set: Set[str] = set(extract_all_strs(entity.get("synonym")))
+                    if pref_label and pref_label != label:
+                        synonyms_set.add(pref_label)
+                    for k, v in entity.items():
+                        if "synonym" in k.lower() and k not in (
+                            "synonym",
+                            "synonymProperty",
+                        ):
+                            synonyms_set.update(extract_all_strs(v))
+
+                    for syn in synonyms_set:
+                        details_batch.append((curie, target_ontology, "synonym", syn))
+
+                    # Definitions and descriptions
+                    defs: Set[str] = set(extract_all_strs(entity.get("definition")))
+                    defs.update(
+                        extract_all_strs(entity.get("http://purl.obolibrary.org/obo/IAO_0000115"))
                     )
-                )
-                for d in defs:
-                    details_batch.append((curie, target_ontology, "definition", d))
-
-                # Obsolete status
-                is_obsolete = cls.get("isObsolete")
-                if is_obsolete is True:
-                    details_batch.append((curie, target_ontology, "obsolete", "true"))
-                elif is_obsolete is False:
-                    details_batch.append((curie, target_ontology, "obsolete", "false"))
-
-                # Leaf status: tag_key is_leaf with value '1' if term has no child
-                has_child_flag = (
-                    cls.get("hasDirectChildren") is True
-                    or cls.get("hasHierarchicalChildren") is True
-                    or cls.get("hasChildren") is True
-                )
-                no_child_flag = (
-                    cls.get("hasDirectChildren") is False
-                    and cls.get("hasHierarchicalChildren") is False
-                ) or cls.get("hasChildren") is False
-                if has_child_flag or no_child_flag:
-                    saw_child_flags = True
-                    if no_child_flag:
-                        details_batch.append((curie, target_ontology, "is_leaf", "1"))
-                else:
-                    curies_in_file.append(curie)
-                    ancestors_raw = (
-                        extract_all_strs(cls.get("hierarchicalAncestor"))
-                        + extract_all_strs(cls.get("directAncestor"))
-                        + extract_all_strs(cls.get("hierarchicalParent"))
-                        + extract_all_strs(cls.get("directParent"))
+                    defs.update(
+                        extract_all_strs(
+                            entity.get("http://www.geneontology.org/formats/oboInOwl#hasDefinition")
+                        )
                     )
-                    for a_raw in ancestors_raw:
-                        clean_a = a_raw.strip().lower()
-                        parent_refs.add(clean_a)
-                        parent_refs.add(iri_to_curie(clean_a).strip().lower())
-
-                # Recursive Hierarchy: only add child-of links for the specified target parents
-                if parent_lookup:
-                    ancestors = (
-                        extract_all_strs(cls.get("hierarchicalAncestor"))
-                        or extract_all_strs(cls.get("directAncestor"))
-                        or extract_all_strs(cls.get("hierarchicalParent"))
-                        or extract_all_strs(cls.get("directParent"))
+                    defs.update(
+                        extract_all_strs(entity.get("http://purl.org/dc/terms/description"))
                     )
-                    matched_parents: set[str] = set()
-                    for anc in ancestors:
-                        clean_anc = anc.strip().lower()
-                        if clean_anc in parent_lookup:
-                            matched_parents.add(parent_lookup[clean_anc])
+                    defs.update(extract_all_strs(entity.get("description")))
+                    for d in defs:
+                        details_batch.append((curie, target_ontology, "definition", d))
 
-                    for mp in matched_parents:
-                        if mp.lower() != curie.lower():
-                            details_batch.append((curie, target_ontology, "child-of", mp))
+                    # Obsolete status
+                    is_obsolete = entity.get("isObsolete")
+                    if is_obsolete is True:
+                        details_batch.append((curie, target_ontology, "obsolete", "true"))
+                    elif is_obsolete is False:
+                        details_batch.append((curie, target_ontology, "obsolete", "false"))
 
-                # FTS entry
-                synonyms_str = " ".join(synonyms_set)
-                defs_str = " ".join(defs)
-                fts_batch.append((curie, target_ontology, label, synonyms_str, defs_str))
+                    # Leaf status: tag_key is_leaf with value '1' if term has no child
+                    has_child_flag = (
+                        entity.get("hasDirectChildren") is True
+                        or entity.get("hasHierarchicalChildren") is True
+                        or entity.get("hasChildren") is True
+                    )
+                    no_child_flag = (
+                        entity.get("hasDirectChildren") is False
+                        and entity.get("hasHierarchicalChildren") is False
+                    ) or entity.get("hasChildren") is False
+                    if has_child_flag or no_child_flag:
+                        saw_child_flags = True
+                        if no_child_flag:
+                            details_batch.append((curie, target_ontology, "is_leaf", "1"))
+                    else:
+                        curies_in_file.append(curie)
+                        ancestors_raw = (
+                            extract_all_strs(entity.get("hierarchicalAncestor"))
+                            + extract_all_strs(entity.get("directAncestor"))
+                            + extract_all_strs(entity.get("hierarchicalParent"))
+                            + extract_all_strs(entity.get("directParent"))
+                        )
+                        for a_raw in ancestors_raw:
+                            clean_a = a_raw.strip().lower()
+                            parent_refs.add(clean_a)
+                            parent_refs.add(iri_to_curie(clean_a).strip().lower())
 
-                if len(terms_batch) >= self.batch_size:
-                    flush_batches()
+                    # Recursive Hierarchy: only add child-of links for the specified target parents
+                    if parent_lookup:
+                        ancestors = (
+                            extract_all_strs(entity.get("hierarchicalAncestor"))
+                            or extract_all_strs(entity.get("directAncestor"))
+                            or extract_all_strs(entity.get("hierarchicalParent"))
+                            or extract_all_strs(entity.get("directParent"))
+                        )
+                        matched_parents: Set[str] = set()
+                        for anc in ancestors:
+                            clean_anc = anc.strip().lower()
+                            if clean_anc in parent_lookup:
+                                matched_parents.add(parent_lookup[clean_anc])
+
+                        for mp in matched_parents:
+                            if mp.lower() != curie.lower():
+                                details_batch.append((curie, target_ontology, "child-of", mp))
+
+                    # FTS entry
+                    synonyms_str = " ".join(synonyms_set)
+                    defs_str = " ".join(defs)
+                    fts_batch.append((curie, target_ontology, label, synonyms_str, defs_str))
+
+                    if len(terms_batch) >= self.batch_size:
+                        flush_batches()
 
             # Handle non-flagged files (fallback to parents graph check)
             if not saw_child_flags and curies_in_file:

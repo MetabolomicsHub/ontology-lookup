@@ -133,6 +133,17 @@ class OntologyLookupService:
         return self.get_default_connection(), False
 
     @staticmethod
+    def _obsolete_filter_sql(alias: str = "t") -> str:
+        """SQL predicate excluding terms explicitly marked obsolete."""
+        return (
+            f"NOT EXISTS (SELECT 1 FROM term_details obsolete "
+            f"WHERE obsolete.curie = {alias}.curie "
+            f"AND obsolete.ontology = {alias}.ontology "
+            "AND obsolete.tag_key = 'obsolete' "
+            "AND lower(trim(obsolete.tag_value)) = 'true')"
+        )
+
+    @staticmethod
     def sanitize_fts_query(q: str) -> str:
         """Sanitize query string for SQLite FTS5 syntax safety while preserving prefix matching."""
         cleaned = re.sub(r'[^\w\s*"-]', " ", q, flags=re.UNICODE).strip()
@@ -208,6 +219,7 @@ class OntologyLookupService:
         ontology: None | str,
         accession: str,
         connection: sqlite3.Connection | None = None,
+        ignore_obsolete: bool = False,
     ) -> None | TermResponse:
         """Lookup an ontology term by ontology short name and its CURIE or full IRI.
 
@@ -244,6 +256,16 @@ class OntologyLookupService:
             if not row:
                 return None
 
+            if (
+                ignore_obsolete
+                and not db.execute(
+                    f"SELECT {self._obsolete_filter_sql()} AS active FROM terms t "
+                    "WHERE t.curie = ? AND t.ontology = ?",
+                    (row["curie"], row["ontology"]),
+                ).fetchone()["active"]
+            ):
+                return None
+
             term_rec = TermRecord(
                 curie=row["curie"],
                 iri=row["iri"],
@@ -262,6 +284,7 @@ class OntologyLookupService:
         ontology: str,
         label: str,
         connection: sqlite3.Connection | None = None,
+        ignore_obsolete: bool = False,
     ) -> None | TermResponse:
         """Exact match lookup by ontology and term label (case-insensitive)."""
         db, should_close = self._get_connection(connection)
@@ -274,6 +297,16 @@ class OntologyLookupService:
             ).fetchone()
 
             if not row:
+                return None
+
+            if (
+                ignore_obsolete
+                and not db.execute(
+                    f"SELECT {self._obsolete_filter_sql()} AS active FROM terms t "
+                    "WHERE t.curie = ? AND t.ontology = ?",
+                    (row["curie"], row["ontology"]),
+                ).fetchone()["active"]
+            ):
                 return None
 
             term_rec = TermRecord(
@@ -298,6 +331,7 @@ class OntologyLookupService:
         limit: int = 50,
         offset: int = 0,
         connection: sqlite3.Connection | None = None,
+        ignore_obsolete: bool = False,
     ) -> list[SearchTermSummary]:
         """Match a complete label or synonym, with optional ontology/hierarchy filters.
 
@@ -373,10 +407,15 @@ class OntologyLookupService:
             sql_parts.append(f"WHERE ontology IN ({placeholders})")
             params.extend(ontologies)
 
+        if ignore_obsolete:
+            sql_parts.append(
+                ("AND " if ontologies else "WHERE ") + self._obsolete_filter_sql("matches")
+            )
+
         if parents:
             placeholders = ",".join("?" for _ in parents)
             sql_parts.append(
-                ("AND " if ontologies else "WHERE ")
+                ("AND " if ontologies or ignore_obsolete else "WHERE ")
                 + "(curie IN ("
                 + placeholders
                 + ") OR EXISTS ("
@@ -418,6 +457,7 @@ class OntologyLookupService:
         limit: int = 50,
         offset: int = 0,
         connection: sqlite3.Connection | None = None,
+        ignore_obsolete: bool = False,
     ) -> list[SearchTermSummary]:
         """Run prefix full-text search across labels, synonyms, and descriptions."""
         sanitized_q = self.sanitize_fts_query(query)
@@ -444,6 +484,9 @@ class OntologyLookupService:
             sql_parts.append("JOIN term_details d ON t.curie = d.curie AND t.ontology = d.ontology")
         sql_parts.append("WHERE terms_fts MATCH ?")
         params.append(sanitized_q)
+
+        if ignore_obsolete:
+            sql_parts.append(f"AND {self._obsolete_filter_sql()}")
 
         if ontologies:
             placeholders = ",".join("?" for _ in ontologies)
@@ -526,6 +569,7 @@ class OntologyLookupService:
         limit: int = 50,
         offset: int = 0,
         connection: sqlite3.Connection | None = None,
+        ignore_obsolete: bool = False,
     ) -> list[SearchTermSummary]:
         """Search ontology terms by arbitrary key-value details/tags (case-insensitive)."""
         sql = """
@@ -539,6 +583,9 @@ class OntologyLookupService:
         if ontology:
             sql += " AND t.ontology = ?"
             params.append(ontology.strip().lower())
+
+        if ignore_obsolete:
+            sql += f" AND {self._obsolete_filter_sql()}"
 
         sql += " LIMIT ? OFFSET ?"
         params.extend([limit, offset])
@@ -570,6 +617,7 @@ class OntologyLookupService:
         limit: int = 50,
         offset: int = 0,
         connection: sqlite3.Connection | None = None,
+        ignore_obsolete: bool = False,
     ) -> list[SearchTermSummary]:
         """Retrieve terms that are recursive children of the specified parent CURIE."""
         return self.search_by_tag(
@@ -579,6 +627,7 @@ class OntologyLookupService:
             limit=limit,
             offset=offset,
             connection=connection,
+            ignore_obsolete=ignore_obsolete,
         )
 
     @cached_use_case
@@ -725,6 +774,7 @@ class OntologyLookupService:
         limit: int = 50,
         offset: int = 0,
         connection: sqlite3.Connection | None = None,
+        ignore_obsolete: bool = False,
     ) -> list[SearchTermSummary]:
         """Free-text search across labels, synonyms, and definitions using FTS5
 
@@ -737,6 +787,7 @@ class OntologyLookupService:
             limit=limit,
             offset=offset,
             connection=connection,
+            ignore_obsolete=ignore_obsolete,
         )
 
     # --- Use Case 11: Find IRI of an CURIE in an ontology ---

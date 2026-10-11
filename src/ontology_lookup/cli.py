@@ -3,15 +3,12 @@ import json
 import os
 import sys
 
-import uvicorn
-
-from ontology_lookup.api import create_app
 from ontology_lookup.config import DEFAULT_DATABASE_CONFIG, DatabaseCreationConfig
 from ontology_lookup.loader import JsonOntologyLoader
 from ontology_lookup.manager import OntologyDatabaseManager
 
 
-def parse_parents_arg(parents_str: None | str) -> None | list[str]:
+def parse_parents_arg(parents_str: str | None) -> list[str] | None:
     """Parse comma-separated parents string into a list of CURIEs."""
     if parents_str is None:
         return None
@@ -308,6 +305,18 @@ def lookup_command(args: argparse.Namespace) -> None:
 
 def serve_command(args: argparse.Namespace) -> None:
     """Start the FastAPI server using Uvicorn."""
+    try:
+        import uvicorn
+
+        from ontology_lookup.api import create_app
+    except ImportError:
+        print(
+            "Error: FastAPI dependencies not found. "
+            "Please install with: pip install 'ontology-lookup[fastapi]'",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     os.environ["ONTOLOGY_DB_PATH"] = args.db
     print(f"Serving Ontology Lookup Service with database '{args.db}' on {args.host}:{args.port}")
     app = create_app(db_path=args.db)
@@ -734,7 +743,7 @@ def create_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: None | list[str] = None) -> None:
+def main(argv: list[str] | None = None) -> None:
     """Entry point for CLI execution."""
     parser = create_parser()
     args = parser.parse_args(argv if argv is not None else sys.argv[1:])

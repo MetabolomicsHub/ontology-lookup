@@ -55,9 +55,13 @@ cd ontology_lookup
 uv sync
 ```
 
-Alternatively, install in development mode with standard `pip`:
+# Core engine and CLI only
+pip install ontology-lookup
 
-```bash
+# With optional FastAPI REST API service
+pip install "ontology-lookup[fastapi]"
+
+# Or in development mode with all test and dev tools
 pip install -e ".[dev]"
 ```
 
@@ -540,7 +544,7 @@ The `search` and `freetext-search` use cases accept multiple ontology filters: p
 
 ### Starting the REST API Server
 
-To enable HTTP access to your database, start the FastAPI server:
+To enable HTTP access to your database, ensure the `[fastapi]` option is installed (`pip install "ontology-lookup[fastapi]"`), then start the server:
 
 ```bash
 uv run ontology-lookup serve --db .db/ontology_lookup.db --host 0.0.0.0 --port 8000

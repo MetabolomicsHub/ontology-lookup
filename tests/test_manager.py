@@ -386,3 +386,28 @@ def test_cli_tag_and_delete_commands(
     main(["admin", "delete-ontology", "-n", "obi", "-d", db_file])
     captured = capsys.readouterr()
     assert "Successfully deleted 'obi'" in captured.out
+
+
+def test_cli_serve_missing_fastapi(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Test that serve command exits with clear error if FastAPI dependencies are missing."""
+    import builtins
+
+    from ontology_lookup.cli import main
+
+    real_import = builtins.__import__
+
+    def mock_import(name: str, *args: Any, **kwargs: Any) -> Any:
+        if name in ("uvicorn", "ontology_lookup.api"):
+            raise ImportError(f"No module named '{name}'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", mock_import)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["serve", "--db", "dummy.db"])
+    assert exc_info.value.code == 1
+    captured = capsys.readouterr()
+    assert "FastAPI dependencies not found" in captured.err
+    assert "ontology-lookup[fastapi]" in captured.err
