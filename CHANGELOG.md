@@ -1,3 +1,9 @@
+## v0.1.7 (2026-10-28)
+
+### Fix
+
+- ontology curie result is not uppercase
+
 ## v0.1.6 (2026-10-11)
 
 ### Fix
