@@ -436,7 +436,7 @@ class OntologyLookupService:
             rows = db.execute("\n".join(sql_parts), params).fetchall()
             return [
                 SearchTermSummary(
-                    curie=row["curie"],
+                    curie=row["curie"].upper() if row["curie"] else "",
                     iri=row["iri"],
                     ontology=row["ontology"],
                     label=row["label"],
@@ -516,7 +516,7 @@ class OntologyLookupService:
                     seen.add(identity)
                     results.append(
                         SearchTermSummary(
-                            curie=row["curie"],
+                            curie=row["curie"].upper() if row["curie"] else "",
                             iri=row["iri"],
                             ontology=row["ontology"],
                             label=row["label"],
@@ -596,7 +596,7 @@ class OntologyLookupService:
             rows = cur.execute(sql, params).fetchall()
             return [
                 SearchTermSummary(
-                    curie=r["curie"],
+                    curie=r["curie"].upper() if r["curie"] else "",
                     iri=r["iri"],
                     ontology=r["ontology"],
                     label=r["label"],
