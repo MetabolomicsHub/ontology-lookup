@@ -1,16 +1,71 @@
+import json
 import logging
+import os
+import shutil
 import sqlite3
-from pathlib import Path
+import tarfile
+import time
+from email.utils import parsedate_to_datetime
+from pathlib import Path, PurePosixPath
+from tempfile import TemporaryDirectory
 from typing import Any, List, Optional, Tuple, Union
+from urllib.request import Request, urlopen
 
 from ontology_lookup.config import DEFAULT_DATABASE_CONFIG, DatabaseCreationConfig
 from ontology_lookup.db import enable_wal_mode, get_write_connection
-from ontology_lookup.loader import JsonOntologyLoader, SssomOntologyLoader
+from ontology_lookup.loader import JsonOntologyLoader, NativeSynonymIndex, SssomOntologyLoader
 from ontology_lookup.schema import initialize_schema
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_INPUT_DIR = str(DEFAULT_DATABASE_CONFIG.source_directory)
+OLS_ARCHIVE_BASE_URL = "https://ftp.ebi.ac.uk/pub/databases/spot/ols/latest"
+
+
+def _archive_is_current(archive: Path, headers: dict[str, str], metadata: dict[str, Any]) -> bool:
+    """Compare HEAD validators and size against the actual cached archive."""
+    if not archive.is_file():
+        return False
+    stat = archive.stat()
+    length = headers.get("Content-Length")
+    if length is not None and stat.st_size != int(length):
+        return False
+    if metadata:
+        if (metadata.get("size"), metadata.get("mtime_ns")) != (stat.st_size, stat.st_mtime_ns):
+            return False
+        if headers.get("ETag") and metadata.get("ETag"):
+            return headers["ETag"] == metadata["ETag"] and (
+                not headers.get("Last-Modified")
+                or headers["Last-Modified"] == metadata.get("Last-Modified")
+            )
+        if headers.get("Last-Modified") and metadata.get("Last-Modified"):
+            return headers["Last-Modified"] == metadata["Last-Modified"]
+    # Adopt a manually downloaded archive only when both size and HTTP date match.
+    if length is not None and headers.get("Last-Modified"):
+        try:
+            timestamp = parsedate_to_datetime(headers["Last-Modified"]).timestamp()
+            return abs(stat.st_mtime - timestamp) < 1
+        except (ValueError, TypeError, OverflowError) as exc:
+            logger.debug("Invalid HTTP Last-Modified date: %s", exc)
+    # Size alone cannot establish freshness when validators are unavailable.
+    return False
+
+
+def _extract_input_archive(archive: Path, destination: Path, folder_name: str) -> None:
+    """Extract wrapped or flat OLS archives into a staging directory."""
+    with tarfile.open(archive, mode="r|gz") as tar:
+        for member in tar:
+            path = PurePosixPath(member.name)
+            if path.is_absolute() or ".." in path.parts:
+                raise ValueError(f"Unsafe archive path: {member.name}")
+            if not (member.isfile() or member.isdir()):
+                raise ValueError(f"Unsupported archive member: {member.name}")
+            parts = path.parts
+            if parts and parts[0] == folder_name:
+                parts = parts[1:]
+            if not parts:
+                continue
+            tar.extract(member.replace(name="/".join(parts)), path=destination, filter="data")
 
 
 DEFAULT_PARENT_TERMS = (
@@ -56,6 +111,102 @@ class OntologyDatabaseManager:
             list(target_parents) if target_parents is not None else list(config.parent_terms)
         )
         self.batch_size = batch_size if batch_size is not None else config.batch_size
+
+    def prepare_input_folders(
+        self,
+        root_folder: str | Path = ".cache",
+        timeout: float = 60.0,
+    ) -> dict[str, dict[str, Any]]:
+        """Prepare ontology_jsons and sssom from the latest OLS archives.
+
+        Check HTTP HEAD ETag, Last-Modified, and Content-Length against cached
+        archives and their .http.json metadata. Download changed/missing archives
+        in chunks, then delete the corresponding input folder before extraction.
+        Unchanged archives are reused; missing folders are re-extracted locally.
+        A failed download preserves existing inputs. An extraction failure leaves
+        the deleted input folder absent; the previous cached archive is preserved.
+
+        Return per-folder archive/directory paths and downloaded/extracted flags.
+        After success, use these folders as this manager's default inputs. This
+        method prepares sources only; it does not create or update the database.
+        """
+        if timeout <= 0:
+            raise ValueError("timeout must be positive")
+        root = Path(root_folder).expanduser().resolve()
+        root.mkdir(parents=True, exist_ok=True)
+        results: dict[str, dict[str, Any]] = {}
+        for name in ("ontology_jsons", "sssom"):
+            archive = root / f"{name}.tgz"
+            destination = root / name
+            metadata_path = root / f"{name}.tgz.http.json"
+            if destination.is_symlink() or (destination.exists() and not destination.is_dir()):
+                raise ValueError(f"Input destination must be a regular directory: {destination}")
+            url = f"{OLS_ARCHIVE_BASE_URL}/{name}.tgz"
+            with urlopen(Request(url, method="HEAD"), timeout=timeout) as response:
+                headers = {
+                    key: response.headers[key]
+                    for key in ("ETag", "Last-Modified", "Content-Length")
+                    if response.headers.get(key) is not None
+                }
+            metadata: dict[str, Any] = {}
+            if metadata_path.is_file():
+                try:
+                    value = json.loads(metadata_path.read_text(encoding="utf-8"))
+                    if isinstance(value, dict):
+                        metadata = value
+                except (ValueError, UnicodeError) as exc:
+                    logger.warning("Ignoring invalid HTTP metadata %s: %s", metadata_path, exc)
+            downloaded = not _archive_is_current(archive, headers, metadata)
+            extracted = downloaded or not destination.is_dir()
+            with TemporaryDirectory(prefix=f".prepare-{name}-", dir=root) as temporary:
+                staging = Path(temporary)
+                source = archive
+                if downloaded:
+                    logger.info("Downloading OLS archive %s", url)
+                    source = staging / archive.name
+                    with urlopen(url, timeout=timeout) as response, source.open("wb") as output:
+                        shutil.copyfileobj(response, output, length=1024 * 1024)
+                        # GET validators describe the bytes actually downloaded if
+                        # the provider publishes a new release between HEAD and GET.
+                        for key in ("ETag", "Last-Modified", "Content-Length"):
+                            if response.headers.get(key) is not None:
+                                headers[key] = response.headers[key]
+                    if headers.get("Content-Length") is not None and source.stat().st_size != int(
+                        headers["Content-Length"]
+                    ):
+                        raise OSError(f"Incomplete OLS archive download: {url}")
+                if extracted:
+                    if downloaded and destination.exists():
+                        logger.info("Deleting previous input folder %s", destination)
+                        shutil.rmtree(destination)
+                    prepared = staging / name
+                    prepared.mkdir()
+                    _extract_input_archive(source, prepared, name)
+                    prepared.replace(destination)
+                if downloaded:
+                    source.replace(archive)
+                    if headers.get("Last-Modified"):
+                        try:
+                            timestamp = parsedate_to_datetime(headers["Last-Modified"]).timestamp()
+                            os.utime(archive, (timestamp, timestamp))
+                        except (ValueError, TypeError, OverflowError) as exc:
+                            logger.debug("Invalid HTTP Last-Modified date: %s", exc)
+                if downloaded or not metadata:
+                    stat = archive.stat()
+                    saved = {**headers, "size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+                    staged_metadata = staging / "metadata.json"
+                    staged_metadata.write_text(json.dumps(saved), encoding="utf-8")
+                    staged_metadata.replace(metadata_path)
+            results[name] = {
+                "archive": str(archive),
+                "directory": str(destination),
+                "downloaded": downloaded,
+                "extracted": extracted,
+            }
+            logger.info("Prepared %s (downloaded=%s, extracted=%s)", name, downloaded, extracted)
+        self.default_input_dir = root / "ontology_jsons"
+        self.default_sssom_dir = root / "sssom"
+        return results
 
     def list_available_ontologies(
         self,
@@ -194,6 +345,45 @@ class OntologyDatabaseManager:
         skip_empty: bool = True,
         sssom_dir: None | str | Path = None,
     ) -> dict[str, dict[str, int]]:
+        """Load JSONs with shared native synonym authority and log total build time.
+
+        The total includes source indexing, JSONs, optional SSSOM imports, stats,
+        and optimization. Results retain the existing per-ontology count format.
+        """
+        started = time.perf_counter()
+        target_dir = Path(source_dir) if source_dir is not None else self.default_input_dir
+        try:
+            with NativeSynonymIndex(target_dir, self.batch_size) as native_synonyms:
+                results = self._load_directory(
+                    source_dir,
+                    ontologies,
+                    target_parents,
+                    clean,
+                    skip_empty,
+                    sssom_dir,
+                    native_synonyms,
+                    started_at=started,
+                )
+        except Exception:
+            logger.error(
+                "Database import failed after %.3f seconds: %s",
+                time.perf_counter() - started,
+                self.db_path_str,
+            )
+            raise
+        return results
+
+    def _load_directory(
+        self,
+        source_dir: None | str | Path = None,
+        ontologies: None | list[str] = None,
+        target_parents: None | list[str] = None,
+        clean: bool = False,
+        skip_empty: bool = True,
+        sssom_dir: None | str | Path = None,
+        native_synonym_index: None | NativeSynonymIndex = None,
+        started_at: None | float = None,
+    ) -> dict[str, dict[str, int]]:
         """Process JSON files in the source directory and ingest into SQLite database.
 
         JSON file names correspond to ontology short names (e.g. ms.json -> 'ms').
@@ -210,10 +400,13 @@ class OntologyDatabaseManager:
             skip_empty: If True, files that result in 0 terms are skipped in
                 the return results.
             sssom_dir: Optional SSSOM folder to import after all JSON files are loaded.
+            started_at: Optional performance-clock start from the outer import,
+                so its total includes native synonym indexing.
 
         Returns:
             Dictionary mapping ontology short name -> {'terms': count, 'details': count}.
         """
+        started = time.perf_counter() if started_at is None else started_at
         target_dir = Path(source_dir) if source_dir is not None else self.default_input_dir
         if not target_dir.exists() or not target_dir.is_dir():
             logger.error("Input ontology directory not found: %s", target_dir)
@@ -254,6 +447,7 @@ class OntologyDatabaseManager:
             db_path=self.db_path_str,
             target_parents=active_parents,
             batch_size=self.batch_size,
+            native_synonym_index=native_synonym_index,
         )
 
         for idx, name in enumerate(target_names, 1):
@@ -269,6 +463,7 @@ class OntologyDatabaseManager:
                 print(f"[{name}] File '{name}.json' not found in {target_dir}. Skipping.")
                 continue
 
+            ontology_started = time.perf_counter()
             json_path = all_json_files[name]
             size_mb = json_path.stat().st_size / (1024 * 1024)
             logger.info(
@@ -290,6 +485,7 @@ class OntologyDatabaseManager:
                 target_parents=active_parents,
                 delete_existing=not clean,
             )
+            ontology_elapsed = time.perf_counter() - ontology_started
 
             if skip_empty and terms_cnt == 0:
                 # Remove empty ontology record from ontologies table
@@ -301,27 +497,33 @@ class OntologyDatabaseManager:
                     conn_clean.close()
 
                 logger.warning(
-                    "[%d/%d][%s] No classes or individuals found in '%s' (empty ontology). Skipping.",
+                    "[%d/%d][%s] No classes or individuals found in '%s' "
+                    "(empty ontology). Skipping after %.3f seconds.",
                     idx,
                     len(target_names),
                     name,
                     json_path.name,
+                    ontology_elapsed,
                 )
-                print(f"[{name}] No terms found (empty ontology).")
+                print(
+                    f"[{name}] No terms found (empty ontology) after {ontology_elapsed:.3f} seconds."
+                )
                 continue
 
             results[name] = {"terms": terms_cnt, "details": details_cnt}
             logger.info(
-                "[%d/%d][%s] Load result: %d terms and %d details successfully ingested.",
+                "[%d/%d][%s] Load result: %d terms and %d details ingested in %.3f seconds.",
                 idx,
                 len(target_names),
                 name,
                 terms_cnt,
                 details_cnt,
+                ontology_elapsed,
             )
             print(
                 f"[{idx}/{len(target_names)}] [{name}] "
-                f"Ingested {terms_cnt} terms and {details_cnt} details."
+                f"Ingested {terms_cnt} terms and {details_cnt} details "
+                f"in {ontology_elapsed:.3f} seconds."
             )
         if sssom_dir is not None:
             self.load_sssom_directory(sssom_dir)
@@ -334,16 +536,16 @@ class OntologyDatabaseManager:
             finally:
                 conn.close()
         self.optimize(vacuum=not clean)
-        total_terms = sum(r["terms"] for r in results.values())
-        total_details = sum(r["details"] for r in results.values())
+        elapsed = time.perf_counter() - started
         logger.info(
-            "Batch loading completed: %d ontologies (%d terms, %d details) loaded into '%s'.",
+            "Database import completed: %d ontologies (%d terms, %d details) in %.3f seconds: %s",
             len(results),
-            total_terms,
-            total_details,
+            sum(counts["terms"] for counts in results.values()),
+            sum(counts["details"] for counts in results.values()),
+            elapsed,
             self.db_path_str,
         )
-
+        print(f"Database import completed: {len(results)} ontologies in {elapsed:.3f} seconds.")
         return results
 
     def load_sssom_directory(self, source_dir: Union[str, Path] = ".cache/sssom") -> int:
@@ -392,10 +594,11 @@ class OntologyDatabaseManager:
             sssom_dir=sssom_dir,
         )
         logger.info(
-            "[%s] File ingestion result: %d terms and %d details ingested.",
+            "[%s] File ingestion result: %d terms and %d details ingested in %.3f seconds.",
             ont_label,
             terms_cnt,
             details_cnt,
+            loader.last_import_duration,
         )
         return terms_cnt, details_cnt
 
@@ -443,12 +646,16 @@ class OntologyDatabaseManager:
             sssom_dir=sssom_dir,
         )
         logger.info(
-            "[%s] Update result: %d terms and %d details successfully updated.",
+            "[%s] Update result: %d terms and %d details updated in %.3f seconds.",
             clean_name,
             terms_cnt,
             details_cnt,
+            loader.last_import_duration,
         )
-        print(f"[{clean_name}] Successfully updated: {terms_cnt} terms, {details_cnt} details.")
+        print(
+            f"[{clean_name}] Successfully updated: {terms_cnt} terms, {details_cnt} details "
+            f"in {loader.last_import_duration:.3f} seconds."
+        )
         return terms_cnt, details_cnt
 
     def delete_ontology(self, ontology_name: str) -> int:

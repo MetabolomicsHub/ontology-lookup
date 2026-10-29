@@ -202,6 +202,41 @@ The EMBL-EBI Ontology Lookup Service (OLS4) distributes standardized JSON repres
 
 ### 1. Download and Extract the Archive
 
+Prepare both the ontology JSON and SSSOM inputs from Python:
+
+```python
+from ontology_lookup import OntologyDatabaseManager
+
+manager = OntologyDatabaseManager()
+status = manager.prepare_input_folders(".cache")
+print(status["ontology_jsons"]["downloaded"], status["sssom"]["downloaded"])
+
+# The manager now uses .cache/ontology_jsons and .cache/sssom as its input defaults.
+manager.create_database()
+```
+
+`prepare_input_folders(root_folder, timeout=60.0)` checks both OLS archive URLs
+using HTTP HEAD. It compares ETag, Last-Modified, and Content-Length with the
+cached archives and adjacent `.tgz.http.json` metadata files. Missing or changed
+archives are streamed to disk and extracted into `root_folder/ontology_jsons`
+and `root_folder/sssom`. Unchanged archives and existing folders are reused;
+missing folders are restored from the local archives without downloading again.
+An existing archive without metadata can be reused when its size and modification
+time match the server. Without usable freshness validators, the method downloads
+again rather than assuming the file is current based only on its size.
+
+Downloads are staged and checked for completeness before changing the input folders.
+After a new archive downloads successfully, its existing `ontology_jsons` or `sssom`
+folder is deleted before extraction begins. HTTP failures and incomplete downloads
+preserve existing inputs; an extraction failure leaves that folder absent and keeps
+the previous cached archive. Unchanged archives keep their existing input folders.
+Each archive is updated independently. The method returns a dictionary
+keyed by `ontology_jsons` and `sssom`, with `archive`, `directory`, `downloaded`,
+and `extracted` fields. It updates the manager's default input paths after both
+archives succeed; it does not modify the database until a loading method is called.
+
+For manual ontology JSON downloading instead:
+
 Execute the following commands to download and unpack the ontology JSON files into the `.cache` directory:
 
 ```bash
@@ -243,6 +278,45 @@ uv run ontology-lookup list-ontologies --available --dir .cache/ontology_jsons
 ## Build Multi-ontology Lookup Database
 
 The lookup engine provides both **Command-Line Interface (CLI)** and **Python Library API** for creating databases, adding ontologies, deleting ontologies, and managing custom term tags.
+
+Synonyms use the CURIE's native ontology as the authority whenever its term is
+available in the input JSON folder. Exact and OBO unscoped synonyms from that native
+term are used for every imported copy. Related, Broad, and Narrow properties are
+ignored, and mixed aggregate synonym fields cannot reintroduce their values.
+An explicitly allowed Exact synonym remains valid if the same text also appears
+under an excluded property. Existing preferred-label aliases are retained only
+when they do not bypass excluded scopes, and imported copies use the native aliases.
+
+For example, native UBERON classifies `whole organism` as Related for
+`UBERON:0000468`; its imported copies therefore retain `multi-cellular organism`
+and exclude `whole organism`, even if another ontology marks it Exact.
+A native term with no allowed synonyms prevents imported synonyms from being added.
+When no native source or native term exists, the loader applies strict source-local
+filtering. The same resolved values populate `term_details` and the FTS synonym index.
+
+Directory imports stream the available JSONs into a temporary SQLite synonym lookup
+once and share it across all selected ontologies, including individuals. Native
+sources can provide authority even when they are not selected for database loading.
+The temporary lookup is deleted after the run; the persistent database schema and
+return formats are unchanged. Index preparation adds a source-reading pass and
+uses temporary disk space rather than retaining all synonyms in memory.
+
+`JsonOntologyLoader.load_file` accepts `native_source_dir` to specify the authority
+folder. For file inputs it defaults to the input file's parent directory; streams
+without an explicit directory use source-local filtering:
+
+```python
+loader.load_file(json_stream, ontology_name="ceph", native_source_dir=".cache/ontology_jsons")
+```
+
+Completion logs and console progress show each ontology's elapsed seconds. A total
+database-import duration includes native indexing, ontology loading, optional SSSOM
+loading, statistics, and optimization. Durations use a monotonic performance clock;
+failures log elapsed time without reporting successful completion. For direct loader
+calls, `loader.last_import_duration` exposes the duration of the last attempt.
+
+Existing databases are not rewritten automatically. Rebuild the database, or reload
+each affected ontology, to replace old synonym tags and FTS entries with native scope.
 
 ### CLI: Build and Database Management
 

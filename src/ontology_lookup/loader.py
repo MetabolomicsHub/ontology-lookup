@@ -3,8 +3,11 @@ import io
 import logging
 import re
 import sqlite3
+import time
+from contextlib import ExitStack
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple, Union
+from tempfile import TemporaryDirectory
+from typing import Any, Dict, Iterable, List, Optional, Self, Set, Tuple, Union
 from urllib.parse import urlsplit
 
 import ijson
@@ -90,8 +93,136 @@ def extract_allowed_synonyms(entity: Dict[str, Any]) -> Set[str]:
     if source_properties and source_properties <= ALLOWED_SYNONYM_PROPERTIES:
         # Preserve explicit allowed values even if the same text also has an
         # excluded scope. Do not reintroduce excluded values via the aggregate.
-        synonyms.update(set(extract_all_strs(entity.get("synonym"))) - excluded)
+        excluded_folded = {value.casefold() for value in excluded}
+        synonyms.update(
+            value
+            for value in extract_all_strs(entity.get("synonym"))
+            if value.casefold() not in excluded_folded
+        )
     return synonyms
+
+
+def _searchable_synonyms(entity: Dict[str, Any]) -> Set[str]:
+    """Include a distinct preferred label only when it does not bypass scope filtering."""
+    synonyms = extract_allowed_synonyms(entity)
+    label = extract_first_str(entity.get("label")) or extract_first_str(
+        entity.get("http://www.w3.org/2000/01/rdf-schema#label")
+    )
+    preferred = extract_first_str(entity.get("prefLabel")) or extract_first_str(
+        entity.get("http://www.w3.org/2004/02/skos/core#prefLabel")
+    )
+    excluded = {
+        value.casefold()
+        for key, raw in entity.items()
+        if "synonym" in key.lower()
+        and any(scope in key.lower() for scope in ("related", "broad", "narrow"))
+        for value in extract_all_strs(raw)
+    }
+    if (
+        preferred
+        and preferred != label
+        and (
+            preferred.casefold() not in excluded
+            or preferred.casefold() in {value.casefold() for value in synonyms}
+        )
+    ):
+        synonyms.add(preferred)
+    return synonyms
+
+
+class NativeSynonymIndex:
+    """Disk-backed native synonym authority shared by an ontology import run."""
+
+    def __init__(self, source_dir: Union[str, Path], batch_size: int = 5000) -> None:
+        self.source_dir = Path(source_dir)
+        self.batch_size = batch_size
+        self._temporary: Optional[TemporaryDirectory] = None
+        self._connection: Optional[sqlite3.Connection] = None
+
+    def __enter__(self) -> Self:
+        if not self.source_dir.is_dir():
+            raise FileNotFoundError(f"Native ontology directory not found: {self.source_dir}")
+        self._temporary = TemporaryDirectory(prefix="ontology-native-synonyms-")
+        try:
+            self._connection = sqlite3.connect(Path(self._temporary.name) / "synonyms.db")
+            self._connection.executescript(
+                "CREATE TABLE native_terms (curie TEXT PRIMARY KEY COLLATE NOCASE);"
+                "CREATE TABLE native_synonyms (curie TEXT COLLATE NOCASE, "
+                "synonym TEXT COLLATE NOCASE, PRIMARY KEY (curie, synonym)) WITHOUT ROWID;"
+            )
+            terms: List[Tuple[str]] = []
+            synonyms: List[Tuple[str, str]] = []
+
+            def flush() -> None:
+                self._connection.executemany("INSERT OR IGNORE INTO native_terms VALUES (?)", terms)
+                self._connection.executemany(
+                    "INSERT OR IGNORE INTO native_synonyms VALUES (?, ?)", synonyms
+                )
+                terms.clear()
+                synonyms.clear()
+
+            with self._connection:
+                for path in sorted(self.source_dir.glob("*.json")):
+                    with path.open("rb") as stream:
+                        metadata = extract_ontology_metadata(stream, path.stem.lower())
+                        prefixes = {
+                            str(metadata[key]).strip().casefold()
+                            for key in ("ontology", "prefix")
+                            if metadata.get(key)
+                        }
+                        for kind in ("classes", "individuals"):
+                            count_key = (
+                                "num_of_classes" if kind == "classes" else "num_of_individuals"
+                            )
+                            if metadata.get(count_key) == 0:
+                                continue
+                            stream.seek(0)
+                            for entity in ijson.items(stream, f"ontologies.item.{kind}.item"):
+                                if not isinstance(entity, dict):
+                                    continue
+                                curie = (
+                                    extract_first_str(entity.get("curie"))
+                                    or extract_first_str(entity.get("shortForm"))
+                                    or iri_to_curie(extract_first_str(entity.get("iri")) or "")
+                                )
+                                if (
+                                    ":" not in curie
+                                    or curie.split(":", 1)[0].casefold() not in prefixes
+                                ):
+                                    continue
+                                terms.append((curie,))
+                                synonyms.extend(
+                                    (curie, value) for value in _searchable_synonyms(entity)
+                                )
+                                if len(terms) + len(synonyms) >= self.batch_size:
+                                    flush()
+                flush()
+            return self
+        except BaseException:
+            self.close()
+            raise
+
+    def resolve(self, curie: str) -> Optional[Set[str]]:
+        """Return None for absent native terms, or their possibly empty synonym set."""
+        rows = self._connection.execute(
+            "SELECT s.synonym FROM native_terms t LEFT JOIN native_synonyms s "
+            "ON s.curie = t.curie WHERE t.curie = ?",
+            (curie,),
+        ).fetchall()
+        if not rows:
+            return None
+        return {row[0] for row in rows if row[0] is not None}
+
+    def close(self) -> None:
+        if self._connection is not None:
+            self._connection.close()
+            self._connection = None
+        if self._temporary is not None:
+            self._temporary.cleanup()
+            self._temporary = None
+
+    def __exit__(self, *args) -> None:
+        self.close()
 
 
 def iri_to_curie(iri: str) -> str:
@@ -505,6 +636,7 @@ class JsonOntologyLoader:
         target_parents: Optional[List[str]] = None,
         batch_size: Optional[int] = None,
         config: Any = None,
+        native_synonym_index: Optional[NativeSynonymIndex] = None,
     ) -> None:
         config = config or DEFAULT_DATABASE_CONFIG
         self.db_path = str(db_path or config.database_path)
@@ -512,6 +644,8 @@ class JsonOntologyLoader:
             list(target_parents) if target_parents is not None else list(config.parent_terms)
         )
         self.batch_size = batch_size or config.batch_size
+        self.native_synonym_index = native_synonym_index
+        self.last_import_duration: Optional[float] = None
 
     def load_file(
         self,
@@ -521,6 +655,63 @@ class JsonOntologyLoader:
         delete_existing: bool = True,
         clean_db: bool = False,
         sssom_dir: Optional[Union[str, Path]] = None,
+        native_source_dir: Optional[Union[str, Path]] = None,
+    ) -> Tuple[int, int]:
+        """Import JSON using native synonym authority, logging elapsed seconds.
+
+        native_source_dir defaults to the parent folder for file inputs. Streams
+        without an explicit directory use source-local filtering. A shared index
+        supplied to the loader is reused unless native_source_dir overrides it.
+        Counts and schema are unchanged; optional SSSOM loading is included in timing.
+        """
+        started = time.perf_counter()
+        name = ontology_name or (
+            Path(source).stem if isinstance(source, (str, Path)) else "ontology"
+        )
+        try:
+            with ExitStack() as stack:
+                native_index = self.native_synonym_index
+                if native_index is None or native_source_dir is not None:
+                    directory = native_source_dir
+                    if directory is None and isinstance(source, (str, Path)):
+                        directory = Path(source).resolve().parent
+                    if directory is not None:
+                        native_index = stack.enter_context(
+                            NativeSynonymIndex(directory, self.batch_size)
+                        )
+                counts = self._load_file(
+                    source,
+                    ontology_name,
+                    target_parents,
+                    delete_existing,
+                    clean_db,
+                    sssom_dir,
+                    native_index,
+                )
+        except Exception:
+            self.last_import_duration = time.perf_counter() - started
+            logger.error(
+                "[%s] Ontology import failed after %.3f seconds", name, self.last_import_duration
+            )
+            raise
+        self.last_import_duration = time.perf_counter() - started
+        logger.info(
+            "[%s] Imported %d terms and %d details in %.3f seconds",
+            name,
+            *counts,
+            self.last_import_duration,
+        )
+        return counts
+
+    def _load_file(
+        self,
+        source: Optional[Union[str, Path, io.BytesIO, io.BufferedReader]],
+        ontology_name: Optional[str] = None,
+        target_parents: Optional[List[str]] = None,
+        delete_existing: bool = True,
+        clean_db: bool = False,
+        sssom_dir: Optional[Union[str, Path]] = None,
+        native_synonym_index: Optional[NativeSynonymIndex] = None,
     ) -> Tuple[int, int]:
         """Ingest ontology classes and individuals from a JSON file into SQLite.
 
@@ -694,22 +885,19 @@ class JsonOntologyLoader:
                         or curie
                     )
 
-                    # Preserve a distinct preferred label as an alternate searchable name.
-                    pref_label = extract_first_str(entity.get("prefLabel"))
-                    if pref_label is None:
-                        pref_label = extract_first_str(
-                            entity.get("http://www.w3.org/2004/02/skos/core#prefLabel")
-                        )
-
                     terms_batch.append((curie, iri, target_ontology, label))
 
                     if entity_kind == "individual":
                         details_batch.append((curie, target_ontology, "entity_type", "individual"))
 
                     # Synonyms
-                    synonyms_set = extract_allowed_synonyms(entity)
-                    if pref_label and pref_label != label:
-                        synonyms_set.add(pref_label)
+                    synonyms_set = (
+                        native_synonym_index.resolve(curie)
+                        if native_synonym_index is not None
+                        else None
+                    )
+                    if synonyms_set is None:
+                        synonyms_set = _searchable_synonyms(entity)
                     for syn in synonyms_set:
                         details_batch.append((curie, target_ontology, "synonym", syn))
 
@@ -805,6 +993,9 @@ class JsonOntologyLoader:
                 name=meta.get("name", final_ont.upper()),
             )
 
+        except Exception:
+            conn.close()
+            raise
         finally:
             if should_close:
                 fp.close()
