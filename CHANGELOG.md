@@ -1,3 +1,9 @@
+## v0.1.8 (2026-10-29)
+
+### Fix
+
+- ontology source is lowercase
+
 ## v0.1.7 (2026-10-28)
 
 ### Fix
