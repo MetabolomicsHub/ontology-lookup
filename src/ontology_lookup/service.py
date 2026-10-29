@@ -345,10 +345,12 @@ class OntologyLookupService:
         ontologies: list[str] = []
         if ontology:
             if isinstance(ontology, str):
-                ontologies = [o.strip().lower() for o in ontology.split(",") if o.strip()]
+                ontologies = [o.strip().lower() for o in ontology.split(",") if o and o.strip()]
             else:
                 for item in ontology:
-                    ontologies.extend([o.strip().lower() for o in item.split(",") if o.strip()])
+                    ontologies.extend(
+                        [o.strip().lower() for o in item.split(",") if o and o.strip()]
+                    )
 
         parents: list[str] = []
         if parent_curie:
@@ -434,7 +436,7 @@ class OntologyLookupService:
         db, should_close = self._get_connection(connection)
         try:
             rows = db.execute("\n".join(sql_parts), params).fetchall()
-            return [
+            results: list[SearchTermSummary] = [
                 SearchTermSummary(
                     curie=row["curie"],
                     iri=row["iri"],
@@ -445,6 +447,9 @@ class OntologyLookupService:
                 )
                 for row in rows
             ]
+            ontology_order = {x: idx for idx, x in enumerate(ontologies, start=1)}
+            results.sort(key=lambda x: ontology_order.get(x.ontology.lower(), 1000))
+            return results
         finally:
             if should_close:
                 db.close()
@@ -579,7 +584,7 @@ class OntologyLookupService:
         WHERE tg.tag_key = ? AND tg.tag_value = ?
         """
         params: list[Any] = [tag_key, tag_value]
-
+        ontologies: list[str] = []
         if ontology:
             sql += " AND t.ontology = ?"
             params.append(ontology.strip().lower())
@@ -594,7 +599,7 @@ class OntologyLookupService:
         try:
             cur = db.cursor()
             rows = cur.execute(sql, params).fetchall()
-            return [
+            results = [
                 SearchTermSummary(
                     curie=r["curie"],
                     iri=r["iri"],
@@ -604,6 +609,10 @@ class OntologyLookupService:
                 )
                 for r in rows
             ]
+            ontologies = [o.strip().lower() for o in ontology.split(",") if o and o.strip()]
+            ontology_order = {x: idx for idx, x in enumerate(ontologies, start=1)}
+            results.sort(key=lambda x: ontology_order.get(x.ontology.lower(), 1000))
+            return results
         finally:
             if should_close:
                 db.close()
