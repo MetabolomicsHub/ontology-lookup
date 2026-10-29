@@ -1,3 +1,9 @@
+## v0.2.1 (2026-10-29)
+
+### Fix
+
+- related, broad and narrow synonyms cause search errors
+
 ## v0.2.0 (2026-10-29)
 
 ### Feat
