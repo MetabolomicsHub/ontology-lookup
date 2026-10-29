@@ -202,7 +202,7 @@ class OntologyLookupService:
             return TermResponse(
                 curie=term.curie,
                 iri=term.iri,
-                ontology=term.ontology,
+                ontology=term.ontology.upper(),
                 label=term.label,
                 synonyms=synonyms,
                 children_of=children_of,
@@ -436,9 +436,9 @@ class OntologyLookupService:
             rows = db.execute("\n".join(sql_parts), params).fetchall()
             return [
                 SearchTermSummary(
-                    curie=row["curie"].upper() if row["curie"] else "",
+                    curie=row["curie"],
                     iri=row["iri"],
-                    ontology=row["ontology"],
+                    ontology=row["ontology"].upper() if row["ontology"] else "",
                     label=row["label"],
                     rank=row["rank"],
                     matched_synonym=row["matched_synonym"],
@@ -516,9 +516,9 @@ class OntologyLookupService:
                     seen.add(identity)
                     results.append(
                         SearchTermSummary(
-                            curie=row["curie"].upper() if row["curie"] else "",
+                            curie=row["curie"],
                             iri=row["iri"],
-                            ontology=row["ontology"],
+                            ontology=row["ontology"].upper() if row["ontology"] else "",
                             label=row["label"],
                             rank=row["rank"],
                         )
@@ -596,9 +596,9 @@ class OntologyLookupService:
             rows = cur.execute(sql, params).fetchall()
             return [
                 SearchTermSummary(
-                    curie=r["curie"].upper() if r["curie"] else "",
+                    curie=r["curie"],
                     iri=r["iri"],
-                    ontology=r["ontology"],
+                    ontology=r["ontology"].upper() if r["ontology"] else "",
                     label=r["label"],
                     rank=None,
                 )
@@ -680,7 +680,7 @@ class OntologyLookupService:
 
             return [
                 OntologyInfo(
-                    ontology=r["ontology"],
+                    ontology=r["ontology"].upper(),
                     name=r["name"] or None,
                     description=r["description"] or None,
                     source_uri=r["source_uri"] or None,
@@ -735,7 +735,7 @@ class OntologyLookupService:
                 if not t_row or t_row["cnt"] == 0:
                     return None
                 return OntologyInfo(
-                    ontology=clean_ont,
+                    ontology=clean_ont.upper(),
                     name=None,
                     description=None,
                     source_uri=None,
@@ -748,7 +748,7 @@ class OntologyLookupService:
                     iri_prefix=None,
                 )
             return OntologyInfo(
-                ontology=row["ontology"],
+                ontology=row["ontology"].upper(),
                 name=row["name"] or None,
                 description=row["description"] or None,
                 source_uri=row["source_uri"] or None,
