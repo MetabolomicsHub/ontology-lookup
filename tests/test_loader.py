@@ -4,9 +4,13 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Dict, List
 
+import pytest
+
 from ontology_lookup.loader import (
+    ALLOWED_SYNONYM_PROPERTIES,
     JsonOntologyLoader,
     extract_all_strs,
+    extract_allowed_synonyms,
     extract_first_str,
     iri_to_curie,
 )
@@ -40,6 +44,7 @@ SAMPLE_MS_DICT: dict[str, Any] = {
                     "curie": {"type": ["literal"], "value": "MS:1000031"},
                     "iri": "http://purl.obolibrary.org/obo/MS_1000031",
                     "label": [{"type": ["literal"], "value": "instrument configuration"}],
+                    "synonymProperty": "http://www.geneontology.org/formats/oboInOwl#hasExactSynonym",
                     "synonym": [
                         {"type": ["literal"], "value": "instrument config"},
                         {"type": ["literal"], "value": "MALDI instrument"},
@@ -55,6 +60,7 @@ SAMPLE_MS_DICT: dict[str, Any] = {
                     "curie": {"type": ["literal"], "value": "MS:1000449"},
                     "iri": "http://purl.obolibrary.org/obo/MS_1000449",
                     "label": [{"type": ["literal"], "value": "LTQ Orbitrap"}],
+                    "synonymProperty": "http://www.geneontology.org/formats/oboInOwl#hasExactSynonym",
                     "synonym": [{"type": ["literal"], "value": "Orbitrap"}],
                     "definition": [
                         {
@@ -96,6 +102,66 @@ SAMPLE_MS_DICT: dict[str, Any] = {
 }
 
 SAMPLE_MS_JSON = json.dumps(SAMPLE_MS_DICT)
+
+
+@pytest.mark.parametrize("property_iri", sorted(ALLOWED_SYNONYM_PROPERTIES))
+def test_allowed_synonym_source_properties(property_iri: str) -> None:
+    assert extract_allowed_synonyms({property_iri: {"value": "direct"}}) == {"direct"}
+    assert extract_allowed_synonyms(
+        {
+            "synonym": {"value": {"value": "aggregated"}},
+            "synonymProperty": {"value": property_iri},
+        }
+    ) == {"aggregated"}
+
+
+@pytest.mark.parametrize("scope", ["Related", "Broad", "Narrow"])
+def test_excluded_synonyms_do_not_leak_from_aggregate(scope: str) -> None:
+    prefix = "http://www.geneontology.org/formats/oboInOwl#"
+    assert (
+        extract_allowed_synonyms(
+            {
+                "synonym": ["excluded"],
+                "synonymProperty": prefix + f"has{scope}Synonym",
+            }
+        )
+        == set()
+    )
+    entity = {
+        prefix + "hasExactSynonym": [{"value": "exact"}, {"value": "shared"}],
+        prefix + "hasSynonym": {"value": "unscoped"},
+        prefix + f"has{scope}Synonym": [{"value": "excluded"}, {"value": "shared"}],
+        "synonym": ["exact", "unscoped", "excluded", "shared", "unattributed"],
+        "synonymProperty": [prefix + "hasExactSynonym", prefix + f"has{scope}Synonym"],
+    }
+    assert extract_allowed_synonyms(entity) == {"exact", "unscoped", "shared"}
+
+
+@pytest.mark.parametrize(
+    "properties",
+    [
+        None,
+        [],
+        ["unknown"],
+        [
+            "http://www.geneontology.org/formats/oboInOwl#hasExactSynonym",
+            "http://www.geneontology.org/formats/oboInOwl#hasRelatedSynonym",
+        ],
+    ],
+)
+def test_aggregate_without_identifiable_allowed_scope(properties: Any) -> None:
+    assert (
+        extract_allowed_synonyms(
+            {
+                "synonym": ["unattributed"],
+                "synonymProperty": properties,
+                "http://www.geneontology.org/formats/oboInOwl#hasSynonymType": "abbreviation",
+                "oboSynonymTypeName": "abbreviation",
+                "http://purl.org/sig/ont/fma/synonym": "other source",
+            }
+        )
+        == set()
+    )
 
 
 def test_helper_functions() -> None:
@@ -295,12 +361,11 @@ def test_loader_individuals(tmp_path: Path) -> None:
     ]
     assert set(ind_tags) == {"ror:000025p04", "ror:00003g016"}
 
-    # 3. Verify synonyms and definitions extracted from individual
+    # 3. Related synonyms are excluded from individuals; definitions are preserved.
     syn_row = cur.execute(
         "SELECT tag_value FROM term_details WHERE curie = 'ror:000025p04' AND tag_key = 'synonym'"
     ).fetchone()
-    assert syn_row is not None
-    assert syn_row["tag_value"] == "TSRI"
+    assert syn_row is None
 
     desc_row = cur.execute(
         "SELECT tag_value FROM term_details WHERE curie = 'ror:000025p04' AND tag_key = 'definition'"

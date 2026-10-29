@@ -336,6 +336,29 @@ def create_app(db_path: None | str = None) -> FastAPI:
             offset=offset,
         )
 
+    # --- Use Case 9: Find terms by cross-reference ---
+    @app.get(
+        "/search/references",
+        response_model=list[SearchTermSummary],
+        summary="Find terms by an exact xref CURIE",
+    )
+    def find_reference_term(
+        reference_curie: Annotated[str, Query(min_length=1, description="Referenced CURIE")],
+        service: Annotated[OntologyLookupService, Depends(get_service)],
+        ontology: Annotated[None | str, Query(description="Optional target ontology")] = None,
+        limit: Annotated[int, Query(ge=1, le=500)] = 50,
+        offset: Annotated[int, Query(ge=0)] = 0,
+        ignore_obsolete: bool = False,
+    ) -> list[SearchTermSummary]:
+        """Find terms whose xref tag equals the supplied CURIE (case-insensitive)."""
+        return service.find_reference_term(
+            reference_curie=reference_curie,
+            ontology=ontology,
+            limit=limit,
+            offset=offset,
+            ignore_obsolete=ignore_obsolete,
+        )
+
     # --- Use Case 5: Find CURIE of an IRI in an ontology ---
     @app.get(
         "/resolve/curie",
@@ -490,6 +513,9 @@ def create_app(db_path: None | str = None) -> FastAPI:
         source_file: Annotated[
             None | str, Query(description="Optional explicit JSON file path")
         ] = None,
+        sssom_dir: Annotated[
+            None | str, Query(description="Optional SSSOM folder to restore xref tags")
+        ] = None,
     ) -> OntologyMutationResponse:
         """Add or refresh an individual ontology from JSON source."""
         try:
@@ -497,6 +523,7 @@ def create_app(db_path: None | str = None) -> FastAPI:
                 ontology_name=ontology,
                 source_dir=source_dir,
                 file_path=source_file,
+                sssom_dir=sssom_dir,
             )
             return OntologyMutationResponse(
                 ontology=ontology,

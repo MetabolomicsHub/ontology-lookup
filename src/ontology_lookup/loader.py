@@ -1,3 +1,4 @@
+import csv
 import io
 import logging
 import re
@@ -15,6 +16,17 @@ from ontology_lookup.schema import initialize_schema
 logger = logging.getLogger(__name__)
 
 DEFAULT_TARGET_PARENTS: List[str] = list(DEFAULT_DATABASE_CONFIG.parent_terms)
+
+ALLOWED_SYNONYM_PROPERTIES = frozenset(
+    {
+        "http://www.geneontology.org/formats/oboInOwl#hasExactSynonym",
+        "http://www.geneontology.org/formats/oboInOWL#hasExactSynonym",
+        "http://www.geneontology.org/formats/oboInOwl#hasSynonym",
+        "http://purl.obolibrary.org/obo/OMIABIS.owl#hasExactSynonym",
+        "http://purl.obolibrary.org/obo/hasExactSynonym",
+        "http://purl.obolibrary.org/obo/has_exact_synonym",
+    }
+)
 
 
 def extract_first_str(v: Any) -> Optional[str]:
@@ -54,6 +66,32 @@ def extract_all_strs(v: Any) -> List[str]:
     if isinstance(v, dict) and "value" in v:
         return extract_all_strs(v["value"])
     return []
+
+
+def extract_allowed_synonyms(entity: Dict[str, Any]) -> Set[str]:
+    """Keep Exact and OBO unscoped synonyms, resolving aggregated values by scope.
+
+    A mixed aggregate cannot identify each value's origin; in that case only
+    values present under an allowed source property are retained.
+    """
+    synonyms: Set[str] = set()
+    excluded: Set[str] = set()
+    for key, value in entity.items():
+        if key in ALLOWED_SYNONYM_PROPERTIES:
+            synonyms.update(extract_all_strs(value))
+        elif "synonym" in key.lower() and key not in (
+            "synonym",
+            "synonymProperty",
+            "synonym_property",
+        ):
+            excluded.update(extract_all_strs(value))
+
+    source_properties = set(extract_all_strs(entity.get("synonymProperty")))
+    if source_properties and source_properties <= ALLOWED_SYNONYM_PROPERTIES:
+        # Preserve explicit allowed values even if the same text also has an
+        # excluded scope. Do not reintroduce excluded values via the aggregate.
+        synonyms.update(set(extract_all_strs(entity.get("synonym"))) - excluded)
+    return synonyms
 
 
 def iri_to_curie(iri: str) -> str:
@@ -168,7 +206,9 @@ def extract_ontology_metadata(
                 ):
                     try:
                         meta["num_of_classes"] = int(value)
-                    except ValueError, TypeError:
+                    except ValueError:
+                        pass
+                    except TypeError:
                         pass
                 elif "numberofindividuals" in prefix.lower() and event in (
                     "number",
@@ -177,7 +217,9 @@ def extract_ontology_metadata(
                 ):
                     try:
                         meta["num_of_individuals"] = int(value)
-                    except ValueError, TypeError:
+                    except ValueError:
+                        pass
+                    except TypeError:
                         pass
                 elif (
                     prefix
@@ -328,6 +370,132 @@ def recalculate_all_ontology_stats(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+class SssomOntologyLoader:
+    """Stream SSSOM TSV mappings into xref tags for existing ontology terms."""
+
+    def __init__(self, db_path: str, batch_size: Optional[int] = None) -> None:
+        self.db_path = str(db_path)
+        self.batch_size = (
+            batch_size if batch_size is not None else DEFAULT_DATABASE_CONFIG.batch_size
+        )
+        if self.batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+
+    @staticmethod
+    def _ontology(curie: str) -> Optional[str]:
+        """Use the CURIE prefix, rather than the source filename, as ontology."""
+        prefix, separator, local_id = curie.partition(":")
+        if (
+            not separator
+            or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]*", prefix)
+            or not local_id
+            or local_id.startswith("//")
+            or any(char.isspace() for char in local_id)
+        ):
+            return None
+        return prefix.lower()
+
+    def load_directory(self, source_dir: Union[str, Path] = ".cache/sssom") -> int:
+        """Add bidirectional xrefs from all *.tsv files; return newly inserted tags.
+
+        Accept owl:equivalentClass (and the rdfs:equivalentClass alias).
+        oboInOwl:hasDbXref also requires a nonblank object_label and an installed
+        object ontology. Each direction is inserted only if its owning term exists
+        under the lowercased CURIE prefix. Missing terms are never manufactured.
+        Repeated mappings/imports are ignored. Import after loading ontology JSONs;
+        re-run after replacing ontologies to restore their xref tags.
+        """
+        directory = Path(source_dir)
+        if not directory.is_dir():
+            raise FileNotFoundError(f"SSSOM directory not found: {directory}")
+        if not Path(self.db_path).is_file():
+            raise FileNotFoundError(f"Ontology database not found: {self.db_path}")
+
+        files = sorted(directory.glob("*.tsv"))
+        conn = get_write_connection(self.db_path)
+        total_inserted = 0
+        affected_ontologies: Set[str] = set()
+        batch: List[Tuple[str, str, str]] = []
+        try:
+            installed = {
+                row[0].lower() for row in conn.execute("SELECT DISTINCT ontology FROM terms")
+            }
+            conn.execute(
+                "CREATE TEMP TABLE sssom_xrefs (curie TEXT, ontology TEXT, tag_value TEXT)"
+            )
+
+            def flush() -> None:
+                nonlocal total_inserted
+                if not batch:
+                    return
+                conn.executemany("INSERT INTO sssom_xrefs VALUES (?, ?, ?)", batch)
+                cursor = conn.execute(
+                    "INSERT OR IGNORE INTO term_details (curie, ontology, tag_key, tag_value) "
+                    "SELECT t.curie, x.ontology, 'xref', x.tag_value FROM sssom_xrefs x "
+                    "JOIN terms t ON t.curie = x.curie AND t.ontology = x.ontology"
+                )
+                total_inserted += cursor.rowcount
+                conn.execute("DELETE FROM sssom_xrefs")
+                batch.clear()
+
+            with conn:
+                for path in files:
+                    with path.open(encoding="utf-8-sig", newline="") as stream:
+                        reader = csv.DictReader(
+                            (line for line in stream if not line.startswith("#")),
+                            delimiter="\t",
+                        )
+                        required = {"subject_id", "predicate_id", "object_id"}
+                        if not required.issubset(reader.fieldnames or []):
+                            raise ValueError(f"Missing required SSSOM columns in {path}")
+                        for row in reader:
+                            predicate = (row.get("predicate_id") or "").strip()
+                            if predicate not in {
+                                "owl:equivalentClass",
+                                "rdfs:equivalentClass",
+                                "oboInOwl:hasDbXref",
+                            }:
+                                continue
+                            if (
+                                predicate == "oboInOwl:hasDbXref"
+                                and not (row.get("object_label") or "").strip()
+                            ):
+                                continue
+                            subject = (row.get("subject_id") or "").strip()
+                            obj = (row.get("object_id") or "").strip()
+                            subject_ontology = self._ontology(subject)
+                            object_ontology = self._ontology(obj)
+                            if not subject_ontology or not object_ontology:
+                                continue
+                            if predicate == "oboInOwl:hasDbXref" and (
+                                object_ontology not in installed
+                            ):
+                                continue
+                            batch.extend(
+                                [(subject, subject_ontology, obj), (obj, object_ontology, subject)]
+                            )
+                            affected_ontologies.update((subject_ontology, object_ontology))
+                            if len(batch) >= self.batch_size:
+                                flush()
+                flush()
+                if total_inserted:
+                    for ontology in sorted(affected_ontologies & installed):
+                        conn.execute(
+                            "UPDATE ontologies SET num_of_details = "
+                            "(SELECT COUNT(*) FROM term_details WHERE ontology = ?) "
+                            "WHERE ontology = ?",
+                            (ontology, ontology),
+                        )
+                    conn.execute(
+                        "UPDATE database_info SET "
+                        "updated_time = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')"
+                    )
+            logger.info("Imported %d xref tags from %d SSSOM files", total_inserted, len(files))
+            return total_inserted
+        finally:
+            conn.close()
+
+
 class JsonOntologyLoader:
     """Streams and ingests ontology JSON files into SQLite database."""
 
@@ -352,6 +520,7 @@ class JsonOntologyLoader:
         target_parents: Optional[List[str]] = None,
         delete_existing: bool = True,
         clean_db: bool = False,
+        sssom_dir: Optional[Union[str, Path]] = None,
     ) -> Tuple[int, int]:
         """Ingest ontology classes and individuals from a JSON file into SQLite.
 
@@ -363,10 +532,14 @@ class JsonOntologyLoader:
                             Defaults to self.target_parents.
             delete_existing: If True, deletes existing terms for this ontology before ingesting.
             clean_db: If True, resets the database file and initializes fresh schema.
+            sssom_dir: Optional folder to re-import xrefs from after loading terms.
 
         Returns:
             Tuple of (terms_count, details_count).
         """
+        if sssom_dir is not None and not Path(sssom_dir).is_dir():
+            raise FileNotFoundError(f"SSSOM directory not found: {sssom_dir}")
+
         if clean_db and Path(self.db_path).exists():
             Path(self.db_path).unlink()
 
@@ -534,16 +707,9 @@ class JsonOntologyLoader:
                         details_batch.append((curie, target_ontology, "entity_type", "individual"))
 
                     # Synonyms
-                    synonyms_set: Set[str] = set(extract_all_strs(entity.get("synonym")))
+                    synonyms_set = extract_allowed_synonyms(entity)
                     if pref_label and pref_label != label:
                         synonyms_set.add(pref_label)
-                    for k, v in entity.items():
-                        if "synonym" in k.lower() and k not in (
-                            "synonym",
-                            "synonymProperty",
-                        ):
-                            synonyms_set.update(extract_all_strs(v))
-
                     for syn in synonyms_set:
                         details_batch.append((curie, target_ontology, "synonym", syn))
 
@@ -648,5 +814,15 @@ class JsonOntologyLoader:
         conn.close()
 
         enable_wal_mode(self.db_path)
+
+        if sssom_dir is not None:
+            SssomOntologyLoader(self.db_path, self.batch_size).load_directory(sssom_dir)
+            conn = get_write_connection(self.db_path)
+            try:
+                total_details = conn.execute(
+                    "SELECT COUNT(*) FROM term_details WHERE ontology = ?", (final_ont,)
+                ).fetchone()[0]
+            finally:
+                conn.close()
 
         return total_terms, total_details

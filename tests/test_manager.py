@@ -32,6 +32,7 @@ SAMPLE_MS_DATA: dict[str, Any] = {
                     "curie": {"type": ["literal"], "value": "MS:1000031"},
                     "iri": "http://purl.obolibrary.org/obo/MS_1000031",
                     "label": [{"type": ["literal"], "value": "instrument configuration"}],
+                    "synonymProperty": "http://www.geneontology.org/formats/oboInOwl#hasExactSynonym",
                     "synonym": [{"type": ["literal"], "value": "config"}],
                     "hierarchicalAncestor": ["http://purl.obolibrary.org/obo/MS_1000463"],
                     "isObsolete": False,
@@ -63,6 +64,7 @@ SAMPLE_OBI_DATA: dict[str, Any] = {
                     "curie": {"type": ["literal"], "value": "OBI:0000424"},
                     "iri": "http://purl.obolibrary.org/obo/OBI_0000424",
                     "label": [{"type": ["literal"], "value": "transcription profiling assay"}],
+                    "synonymProperty": "http://www.geneontology.org/formats/oboInOwl#hasExactSynonym",
                     "synonym": [{"type": ["literal"], "value": "expression assay"}],
                     "hierarchicalAncestor": ["http://purl.obolibrary.org/obo/OBI_0000070"],
                     "isObsolete": False,
@@ -104,6 +106,64 @@ SAMPLE_OBI_UPDATED_DATA: dict[str, Any] = {
         }
     ]
 }
+
+
+@pytest.mark.parametrize("entity_kind", ["classes", "individuals"])
+def test_build_and_update_filter_synonyms(tmp_path: Path, entity_kind: str) -> None:
+    prefix = "http://www.geneontology.org/formats/oboInOwl#"
+    db_file = tmp_path / "scoped.db"
+    source_file = tmp_path / "scoped.json"
+    entity = {
+        "curie": "TEST:1",
+        "label": "test term",
+        prefix + "hasExactSynonym": {"value": "exactalias"},
+        prefix + "hasSynonym": {"value": "unscopedalias"},
+        prefix + "hasRelatedSynonym": {"value": "relatedalias"},
+        prefix + "hasBroadSynonym": {"value": "broadalias"},
+        prefix + "hasNarrowSynonym": {"value": "narrowalias"},
+        "synonym": ["exactalias", "unscopedalias", "relatedalias", "broadalias", "narrowalias"],
+        "synonymProperty": [
+            prefix + "has" + scope + "Synonym"
+            for scope in ["Exact", "", "Related", "Broad", "Narrow"]
+        ],
+    }
+    source_file.write_text(
+        json.dumps({"ontologies": [{"ontologyId": "scoped", entity_kind: [entity]}]})
+    )
+    mgr = OntologyDatabaseManager(db_path=db_file, default_input_dir=tmp_path)
+    mgr.create_database(ontologies=["scoped"])
+
+    def stored_synonyms() -> set[str]:
+        with sqlite3.connect(db_file) as conn:
+            return {
+                row[0]
+                for row in conn.execute(
+                    "SELECT tag_value FROM term_details WHERE tag_key = 'synonym'"
+                )
+            }
+
+    assert stored_synonyms() == {"exactalias", "unscopedalias"}
+    # Model a database built before filtering, including stale search entries.
+    with sqlite3.connect(db_file) as conn:
+        conn.execute(
+            "INSERT INTO term_details (curie, ontology, tag_key, tag_value) "
+            "VALUES ('TEST:1', 'scoped', 'synonym', 'relatedalias')"
+        )
+        conn.execute("UPDATE terms_fts SET synonyms = synonyms || ' relatedalias'")
+    mgr.update_ontology("scoped")
+    assert stored_synonyms() == {"exactalias", "unscopedalias"}
+    with sqlite3.connect(db_file) as conn:
+        for alias in ["exactalias", "unscopedalias"]:
+            assert conn.execute(
+                "SELECT curie FROM terms_fts WHERE terms_fts MATCH ?", (alias,)
+            ).fetchall() == [("TEST:1",)]
+        for alias in ["relatedalias", "broadalias", "narrowalias"]:
+            assert (
+                conn.execute(
+                    "SELECT curie FROM terms_fts WHERE terms_fts MATCH ?", (alias,)
+                ).fetchall()
+                == []
+            )
 
 
 @pytest.fixture

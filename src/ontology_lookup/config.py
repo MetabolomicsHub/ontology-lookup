@@ -9,6 +9,7 @@ from dotenv import dotenv_values
 from pydantic import BaseModel, ConfigDict, Field
 
 DEFAULT_SOURCE_DIRECTORY = Path(".cache/ontology_jsons")
+DEFAULT_SSSOM_SOURCE_DIRECTORY = Path(".cache/sssom")
 DEFAULT_PARENT_TERMS = []
 DEFAULT_DATABASE_PATH = Path(".db/ontology_lookup.db")
 DEFAULT_BATCH_SIZE = 5000
@@ -20,6 +21,7 @@ class DatabaseCreationConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     source_directory: Path = DEFAULT_SOURCE_DIRECTORY
+    sssom_dir: Path = DEFAULT_SSSOM_SOURCE_DIRECTORY
     parent_terms: tuple[str, ...] = DEFAULT_PARENT_TERMS
     database_path: Path = DEFAULT_DATABASE_PATH
     batch_size: int = Field(default=DEFAULT_BATCH_SIZE, gt=0)

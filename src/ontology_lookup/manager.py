@@ -5,7 +5,7 @@ from typing import Any, List, Optional, Tuple, Union
 
 from ontology_lookup.config import DEFAULT_DATABASE_CONFIG, DatabaseCreationConfig
 from ontology_lookup.db import enable_wal_mode, get_write_connection
-from ontology_lookup.loader import JsonOntologyLoader
+from ontology_lookup.loader import JsonOntologyLoader, SssomOntologyLoader
 from ontology_lookup.schema import initialize_schema
 
 logger = logging.getLogger(__name__)
@@ -38,6 +38,7 @@ class OntologyDatabaseManager:
         self,
         db_path: None | str | Path = None,
         default_input_dir: None | str | Path = None,
+        default_sssom_dir: None | str | Path = None,
         target_parents: None | list[str] = None,
         batch_size: None | int = None,
         config: None | DatabaseCreationConfig = None,
@@ -47,6 +48,9 @@ class OntologyDatabaseManager:
         self.db_file_path = Path(self.db_path_str)
         self.default_input_dir = Path(
             default_input_dir if default_input_dir is not None else config.source_directory
+        )
+        self.default_sssom_dir = Path(
+            default_sssom_dir if default_sssom_dir is not None else config.sssom_dir
         )
         self.target_parents: list[str] = (
             list(target_parents) if target_parents is not None else list(config.parent_terms)
@@ -188,10 +192,12 @@ class OntologyDatabaseManager:
         target_parents: None | list[str] = None,
         clean: bool = False,
         skip_empty: bool = True,
+        sssom_dir: None | str | Path = None,
     ) -> dict[str, dict[str, int]]:
         """Process JSON files in the source directory and ingest into SQLite database.
 
         JSON file names correspond to ontology short names (e.g. ms.json -> 'ms').
+        Only Exact and OBO hasSynonym synonyms with identifiable source scope are loaded.
 
         Args:
             source_dir: Directory containing ontology JSON files
@@ -203,6 +209,7 @@ class OntologyDatabaseManager:
             clean: If True, deletes and re-creates the database from scratch.
             skip_empty: If True, files that result in 0 terms are skipped in
                 the return results.
+            sssom_dir: Optional SSSOM folder to import after all JSON files are loaded.
 
         Returns:
             Dictionary mapping ontology short name -> {'terms': count, 'details': count}.
@@ -211,6 +218,10 @@ class OntologyDatabaseManager:
         if not target_dir.exists() or not target_dir.is_dir():
             logger.error("Input ontology directory not found: %s", target_dir)
             raise FileNotFoundError(f"Input ontology directory not found: {target_dir}")
+        if sssom_dir is not None and not Path(sssom_dir).is_dir():
+            raise FileNotFoundError(f"SSSOM directory not found: {sssom_dir}")
+        if not sssom_dir and self.default_sssom_dir.exists():
+            sssom_dir = self.default_sssom_dir
 
         if clean and self.db_file_path.exists():
             logger.info("Cleaning existing database at '%s'", self.db_path_str)
@@ -312,6 +323,16 @@ class OntologyDatabaseManager:
                 f"[{idx}/{len(target_names)}] [{name}] "
                 f"Ingested {terms_cnt} terms and {details_cnt} details."
             )
+        if sssom_dir is not None:
+            self.load_sssom_directory(sssom_dir)
+            conn = get_write_connection(self.db_path_str)
+            try:
+                for name, counts in results.items():
+                    counts["details"] = conn.execute(
+                        "SELECT COUNT(*) FROM term_details WHERE ontology = ?", (name,)
+                    ).fetchone()[0]
+            finally:
+                conn.close()
         self.optimize(vacuum=not clean)
         total_terms = sum(r["terms"] for r in results.values())
         total_details = sum(r["details"] for r in results.values())
@@ -324,6 +345,10 @@ class OntologyDatabaseManager:
         )
 
         return results
+
+    def load_sssom_directory(self, source_dir: Union[str, Path] = ".cache/sssom") -> int:
+        """Import xref details after ontology JSONs; return newly inserted tags."""
+        return SssomOntologyLoader(self.db_path_str, self.batch_size).load_directory(source_dir)
 
     def optimize(self, vacuum: bool = True) -> None:
         """Update SQLite planner statistics and optionally reclaim unused pages."""
@@ -348,8 +373,9 @@ class OntologyDatabaseManager:
         ontology_name: Optional[str] = None,
         target_parents: Optional[List[str]] = None,
         delete_existing: bool = True,
+        sssom_dir: None | str | Path = None,
     ) -> Tuple[int, int]:
-        """Ingest a single ontology JSON file into the database."""
+        """Ingest ontology JSON, optionally restoring xrefs from a SSSOM folder."""
         ont_label = ontology_name or Path(file_path).stem.lower()
         logger.info("[%s] Ingesting single ontology file '%s'...", ont_label, file_path)
         active_parents = target_parents if target_parents is not None else self.target_parents
@@ -363,6 +389,7 @@ class OntologyDatabaseManager:
             ontology_name=ontology_name,
             target_parents=active_parents,
             delete_existing=delete_existing,
+            sssom_dir=sssom_dir,
         )
         logger.info(
             "[%s] File ingestion result: %d terms and %d details ingested.",
@@ -378,10 +405,14 @@ class OntologyDatabaseManager:
         source_dir: None | str | Path = None,
         file_path: None | str | Path = None,
         target_parents: None | list[str] = None,
+        sssom_dir: None | str | Path = None,
     ) -> tuple[int, int]:
         """Update a single ontology from either an explicit file path or by finding
 
         <ontology_name>.json in the source directory.
+        Only Exact and OBO hasSynonym synonyms with identifiable source scope are loaded.
+        If sssom_dir is supplied, re-import all its mappings after replacing terms,
+        restoring xrefs in both directions, including mappings from other files.
         """
         clean_name = ontology_name.lower().strip()
         final_file: Path
@@ -409,6 +440,7 @@ class OntologyDatabaseManager:
             ontology_name=clean_name,
             target_parents=active_parents,
             delete_existing=True,
+            sssom_dir=sssom_dir,
         )
         logger.info(
             "[%s] Update result: %d terms and %d details successfully updated.",
@@ -594,6 +626,7 @@ class OntologyDatabaseManager:
         target_parents: None | list[str] = None,
         clean: bool = True,
         skip_empty: bool = True,
+        sssom_dir: None | str | Path = None,
     ) -> dict[str, dict[str, int]]:
         """Create database from ontologies in the source directory.
 
@@ -606,6 +639,7 @@ class OntologyDatabaseManager:
             target_parents: Optional list of target parent CURIEs for recursive child-of links.
             clean: If True (default), creates a clean database by removing any existing DB file.
             skip_empty: If True (default), files with 0 classes are excluded from return dictionary.
+            sssom_dir: Optional SSSOM folder, imported after all ontology JSONs.
 
         Returns:
             Dictionary mapping ontology short name -> {'terms': count, 'details': count}.
@@ -622,6 +656,7 @@ class OntologyDatabaseManager:
             target_parents=target_parents,
             clean=clean,
             skip_empty=skip_empty,
+            sssom_dir=sssom_dir,
         )
 
 
@@ -633,6 +668,7 @@ def create_database(
     clean: bool = True,
     batch_size: None | int = None,
     config: None | DatabaseCreationConfig = None,
+    sssom_dir: None | str | Path = None,
 ) -> dict[str, dict[str, int]]:
     """Create database from ontologies in the source directory.
 
@@ -645,6 +681,7 @@ def create_database(
         target_parents: Optional list of target parent CURIEs for recursive child-of links.
         clean: If True (default), removes existing database before creation.
         batch_size: Batch size for SQLite batch insertions.
+        sssom_dir: Optional SSSOM folder, imported after all ontology JSONs.
 
     Returns:
         Dictionary mapping ontology short name -> {'terms': count, 'details': count}.
@@ -666,6 +703,7 @@ def create_database(
         ontologies=ontologies,
         target_parents=target_parents,
         clean=clean,
+        sssom_dir=sssom_dir,
     )
 
 

@@ -2,7 +2,7 @@
 
 from ontology_lookup.config import DEFAULT_DATABASE_CONFIG, DatabaseCreationConfig
 from ontology_lookup.db import get_readonly_connection
-from ontology_lookup.loader import DEFAULT_TARGET_PARENTS, JsonOntologyLoader
+from ontology_lookup.loader import DEFAULT_TARGET_PARENTS, JsonOntologyLoader, SssomOntologyLoader
 from ontology_lookup.manager import (
     DEFAULT_INPUT_DIR,
     OntologyDatabaseManager,
@@ -41,6 +41,7 @@ __all__ = [
     "OntologyLookupService",
     "OntologyMutationResponse",
     "SearchTermSummary",
+    "SssomOntologyLoader",
     "TagDeleteResponse",
     "TagOperationRequest",
     "TagOperationResponse",

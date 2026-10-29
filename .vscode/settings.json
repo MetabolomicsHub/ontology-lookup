@@ -16,6 +16,7 @@
         "pyproject",
         "pytest",
         "setuptools",
+        "sssom",
         "UNINDEXED",
         "uvicorn",
         "versioninfo",

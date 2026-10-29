@@ -35,6 +35,7 @@ Designed for biological and scientific ontologies (such as HUPO PSI-MS, EDAM, OB
    - [Use Case 6: Key-Value Metadata Tag Search](#use-case-6-key-value-metadata-tag-search)
    - [Use Case 7: Recursive Descendants / Children Lookup](#use-case-7-recursive-descendants--children-lookup)
    - [Use Case 8: Freetext Search (Labels, Synonyms, and Definitions)](#use-case-8-freetext-search-labels-synonyms-and-definitions)
+   - [Use Case 9: Cross-reference Term Search](#use-case-9-cross-reference-term-search)
 
 ---
 
@@ -539,7 +540,7 @@ curl -X GET "http://localhost:8000/info"
 
 ## Search on Multi-ontology Lookup Database
 
-The query layer supports **8 primary use cases** available via both the **CLI** and **API** (Python service + REST HTTP endpoints).
+The query layer supports **9 primary use cases** available via both the **CLI** and **API** (Python service + REST HTTP endpoints).
 The `search` and `freetext-search` use cases accept multiple ontology filters: pass comma-separated names in the CLI, a list in Python, or repeat the `ontology` query parameter in HTTP requests.
 
 ### Starting the REST API Server
@@ -568,13 +569,14 @@ Interactive OpenAPI documentation and Swagger UI will be available at:
 | `/search` | `GET` | `q`, `search_in_synonyms`, repeatable `ontology` and `parent_curie`, `limit`, `offset` | Case-insensitive exact match on labels or synonyms |
 | `/search/freetext` | `GET` | `q`, repeatable `ontology` and `parent_curie`, `limit`, `offset` | Ranked freetext search across labels, synonyms, and definitions |
 | `/search/tags` | `GET` | `tag_key`, `tag_value`, `ontology` (opt), `limit`, `offset` | Search terms by metadata tags (e.g. `is_leaf`, `obsolete`) |
+| `/search/references` | `GET` | `reference_curie`, `ontology` (opt), `limit`, `offset`, `ignore_obsolete` | Find terms by an exact xref CURIE |
 | `/resolve/curie` | `GET` | `iri`, `ontology` (opt) | Resolve a full IRI back to its primary CURIE |
 | `/resolve/iri` | `GET` | `curie`, `ontology` (opt) | Resolve a CURIE to its IRI |
 | `/children/{parent_curie}` | `GET` | `parent_curie` (path), `ontology` (opt), `limit`, `offset` | Get all recursive descendants of a parent CURIE |
 | `/parent-terms` | `GET` | *None* | List parent CURIEs referenced by indexed `child-of` tags |
 | `/ontologies` | `GET` | *None* | List installed ontologies with version, terms, obsoletes, and details |
 | `/ontologies/{ontology}` | `GET` | `ontology` (path) | Get metadata for a specific installed ontology |
-| `/ontologies/{ontology}` | `POST` / `PUT` | `ontology` (path), `source_dir` (opt), `source_file` (opt) | Add or update an ontology from source JSON |
+| `/ontologies/{ontology}` | `POST` / `PUT` | `ontology` (path), `source_dir` (opt), `source_file` (opt), `sssom_dir` (opt) | Add or update an ontology from source JSON and optionally restore SSSOM xrefs |
 | `/ontologies/{ontology}` | `DELETE` | `ontology` (path) | Delete an ontology, its terms, hierarchy links, and FTS entries |
 | `/info` | `GET` | *None* | Retrieve database creation and last-updated metadata |
 | `/health` | `GET` | *None* | Service health status and total terms count |
@@ -1062,4 +1064,91 @@ curl -X GET "http://localhost:8000/search/freetext?q=orbitrap+mass+spectrometer&
 
 # Example 3: Multi-ontology freetext query with parent filter
 curl -X GET "http://localhost:8000/search/freetext?q=quadrupole&ontology=ms&ontology=edam&parent_curie=MS:1000031"
+```
+
+### Use Case 9: Cross-reference Term Search
+
+Pass the optional `sssom_dir` to creation and update methods to import mappings
+automatically after ontology terms have been loaded. Directory builds import the
+folder once, after all JSONs, so cross-ontology targets are available. Single-ontology
+updates re-import the whole supplied folder to restore mappings found in other
+ontologies' SSSOM files as well. Returned detail counts include the imported xrefs.
+
+```python
+from ontology_lookup import OntologyDatabaseManager, create_database
+
+manager = OntologyDatabaseManager(db_path=".db/ontology_lookup.db")
+manager.create_database(source_dir=".cache/ontology_jsons", sssom_dir=".cache/sssom")
+manager.update_ontology("cl", source_dir=".cache/ontology_jsons", sssom_dir=".cache/sssom")
+
+# The standalone helper accepts the same optional folder.
+create_database(
+    db_path=".db/another.db",
+    source_dir=".cache/ontology_jsons",
+    sssom_dir=".cache/sssom",
+)
+```
+
+The manager's `load_directory` and `load_file`, and `JsonOntologyLoader.load_file`,
+also accept `sssom_dir`. Omit it (or pass `None`) for JSON-only loading. Supply the
+folder on each operation that should import mappings; it is not saved in the database.
+
+```bash
+uv run ontology-lookup admin init-db --dir .cache/ontology_jsons --sssom-dir .cache/sssom
+uv run ontology-lookup admin update-ontology --name cl --sssom-dir .cache/sssom
+# Single-file builds also accept --sssom-dir.
+uv run ontology-lookup admin build --source .cache/ontology_jsons/cl.json --sssom-dir .cache/sssom
+```
+
+REST ontology `POST`/`PUT` updates accept the optional `sssom_dir` query parameter.
+To import mappings separately after loading ontology JSONs:
+
+```bash
+uv run ontology-lookup admin load-sssom --dir .cache/sssom --db .db/ontology_lookup.db
+uv run ontology-lookup find-reference-term --reference-curie FMA:68646 --ontology cl --db .db/ontology_lookup.db
+```
+
+The loader streams `*.tsv` files, skips SSSOM metadata comments, and inserts
+`xref` tags in both directions for `owl:equivalentClass` (also accepting
+`rdfs:equivalentClass`). For `oboInOwl:hasDbXref`, `object_label` must be nonblank
+and the object CURIE's ontology must have terms installed in the database.
+Each tag's `ontology` is the lowercased prefix of its owning CURIE, independently
+of the source filename. A direction is skipped when its owning term does not
+exist under that ontology; no placeholder terms are created.
+
+Imports preserve existing tags and ignore duplicates, including repeated imports.
+Invalid CURIEs and other predicates are skipped; missing required ID/predicate
+columns cause the SSSOM import to roll back. JSON loading has already committed
+when SSSOM import begins. Missing folder paths are rejected before JSON loading.
+When replacing ontologies, supply `sssom_dir` or run the import separately,
+because replacing an ontology removes its existing details. Imports are additive;
+they do not remove existing xrefs from other ontologies when a mapping disappears
+from the source files.
+Existing service query caches expire after 60 seconds.
+
+```python
+from ontology_lookup import OntologyDatabaseManager, OntologyLookupService
+
+manager = OntologyDatabaseManager(db_path=".db/ontology_lookup.db")
+inserted = manager.load_sssom_directory(".cache/sssom")
+
+service = OntologyLookupService(db_path=".db/ontology_lookup.db")
+try:
+    matches = service.find_reference_term(
+        reference_curie="FMA:68646", ontology="cl", ignore_obsolete=True
+    )
+    for term in matches:
+        print(term.curie, term.label)
+finally:
+    service.close()
+```
+
+Reference lookup matches the complete `xref` value case-insensitively, with optional
+target ontology, pagination, and obsolete-term filtering. It returns
+`list[SearchTermSummary]`, or an empty list when nothing matches.
+
+```bash
+curl --get "http://localhost:8000/search/references" \
+  --data-urlencode "reference_curie=FMA:68646" \
+  --data-urlencode "ontology=cl"
 ```

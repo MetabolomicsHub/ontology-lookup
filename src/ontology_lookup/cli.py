@@ -46,6 +46,7 @@ def build_command(args: argparse.Namespace) -> None:
         ontology_name=args.ontology,
         target_parents=parents,
         clean_db=args.clean,
+        sssom_dir=args.sssom_dir,
     )
     msg = (
         f"Ingestion completed successfully! Ingested {terms_count} terms "
@@ -76,10 +77,18 @@ def init_db_command(args: argparse.Namespace) -> None:
         ontologies=ontologies,
         target_parents=parents,
         clean=args.clean,
+        sssom_dir=args.sssom_dir,
     )
     print(f"Database population finished across {len(results)} ontologies.")
     for ont, counts in results.items():
         print(f" - {ont}: {counts['terms']} terms, {counts['details']} details")
+
+
+def load_sssom_command(args: argparse.Namespace) -> None:
+    """Add SSSOM xref tags to an existing ontology database."""
+    manager = OntologyDatabaseManager(db_path=args.db, batch_size=args.batch_size)
+    count = manager.load_sssom_directory(args.dir)
+    print(f"Imported {count} new xref tags from '{args.dir}'.")
 
 
 def update_ontology_command(args: argparse.Namespace) -> None:
@@ -99,6 +108,7 @@ def update_ontology_command(args: argparse.Namespace) -> None:
         source_dir=source_dir,
         file_path=args.source,
         target_parents=parents,
+        sssom_dir=args.sssom_dir,
     )
     print(f"Successfully updated '{args.name}': {terms} terms, {details} details.")
 
@@ -279,6 +289,14 @@ def lookup_command(args: argparse.Namespace) -> None:
         result = svc.search_by_tag(
             args.tag_key, args.tag_value, args.ontology, args.limit, args.offset
         )
+    elif args.command == "find-reference-term":
+        result = svc.find_reference_term(
+            reference_curie=args.reference_curie,
+            ontology=args.ontology,
+            limit=args.limit,
+            offset=args.offset,
+            ignore_obsolete=args.ignore_obsolete,
+        )
     elif args.command == "get-children":
         result = svc.get_children(args.parent, args.ontology, args.limit, args.offset)
     elif args.command == "list-ontologies":
@@ -334,6 +352,17 @@ def create_parser() -> argparse.ArgumentParser:
     default_parents_str = ",".join(DEFAULT_DATABASE_CONFIG.parent_terms)
     admin_parser = subparsers.add_parser("admin", help="Create or update the database")
     admin_subparsers = admin_parser.add_subparsers(dest="admin_command", required=True)
+
+    sssom_parser = admin_subparsers.add_parser(
+        "load-sssom", help="Import xref tags from SSSOM TSV files into an existing database"
+    )
+    sssom_parser.add_argument("--dir", "-i", default=".cache/sssom", help="SSSOM directory")
+    sssom_parser.add_argument(
+        "--db", "-d", default=str(DEFAULT_DATABASE_CONFIG.database_path), help="SQLite database"
+    )
+    sssom_parser.add_argument(
+        "--batch-size", "-b", type=int, default=DEFAULT_DATABASE_CONFIG.batch_size
+    )
 
     # 1. build (single source JSON)
     build_parser = admin_subparsers.add_parser(
@@ -596,6 +625,16 @@ def create_parser() -> argparse.ArgumentParser:
     tag_parser.add_argument("--offset", type=int, default=0, help="Result offset")
     add_db_argument(tag_parser)
 
+    reference_parser = subparsers.add_parser(
+        "find-reference-term", help="Find terms whose xref tag matches a CURIE"
+    )
+    reference_parser.add_argument("--reference-curie", required=True, help="Referenced CURIE")
+    reference_parser.add_argument("--ontology", "-o", default=None, help="Target ontology")
+    reference_parser.add_argument("--limit", "-l", type=int, default=50)
+    reference_parser.add_argument("--offset", type=int, default=0)
+    reference_parser.add_argument("--ignore-obsolete", action="store_true")
+    add_db_argument(reference_parser)
+
     children_parser = subparsers.add_parser(
         "get-children", help="Find descendants of a parent CURIE"
     )
@@ -719,6 +758,13 @@ def create_parser() -> argparse.ArgumentParser:
         help="Target SQLite database path",
     )
 
+    for ingestion_parser in (build_parser, init_parser, upd_parser):
+        ingestion_parser.add_argument(
+            "--sssom-dir",
+            default=None,
+            help="Optional SSSOM folder to import after ontology JSONs",
+        )
+
     # Keep both help listings stable and easy to scan regardless of where each
     # command's arguments are defined above.
     for action in parser._actions:
@@ -752,6 +798,8 @@ def main(argv: list[str] | None = None) -> None:
             build_command(args)
         elif args.admin_command == "init-db":
             init_db_command(args)
+        elif args.admin_command == "load-sssom":
+            load_sssom_command(args)
         elif args.admin_command == "update-ontology":
             update_ontology_command(args)
         elif args.admin_command == "delete-ontology":
@@ -773,6 +821,7 @@ def main(argv: list[str] | None = None) -> None:
         "iri-to-curie",
         "curie-to-iri",
         "search-by-tag",
+        "find-reference-term",
         "get-children",
         "get-ontology",
         "health",

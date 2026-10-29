@@ -592,7 +592,7 @@ class OntologyLookupService:
         if ignore_obsolete:
             sql += f" AND {self._obsolete_filter_sql()}"
 
-        sql += " LIMIT ? OFFSET ?"
+        sql += " ORDER BY t.ontology, t.curie LIMIT ? OFFSET ?"
         params.extend([limit, offset])
 
         db, should_close = self._get_connection(connection)
@@ -609,13 +609,41 @@ class OntologyLookupService:
                 )
                 for r in rows
             ]
-            ontologies = [o.strip().lower() for o in ontology.split(",") if o and o.strip()]
+            ontologies = [o.strip().lower() for o in (ontology or "").split(",") if o and o.strip()]
             ontology_order = {x: idx for idx, x in enumerate(ontologies, start=1)}
             results.sort(key=lambda x: ontology_order.get(x.ontology.lower(), 1000))
             return results
         finally:
             if should_close:
                 db.close()
+
+    # --- Use Case 9: Find terms referring to an external CURIE ---
+    def find_reference_term(
+        self,
+        reference_curie: str,
+        ontology: None | str = None,
+        limit: int = 50,
+        offset: int = 0,
+        connection: sqlite3.Connection | None = None,
+        ignore_obsolete: bool = False,
+    ) -> list[SearchTermSummary]:
+        """Find exact, case-insensitive xref matches, optionally in a target ontology.
+
+        Returns terms whose term_details xref value equals reference_curie;
+        does not expand mappings transitively or match labels/synonyms.
+        """
+        reference_curie = reference_curie.strip()
+        if not reference_curie:
+            return []
+        return self.search_by_tag(
+            tag_key="xref",
+            tag_value=reference_curie,
+            ontology=ontology,
+            limit=limit,
+            offset=offset,
+            connection=connection,
+            ignore_obsolete=ignore_obsolete,
+        )
 
     # --- Use Cases 7: Find children of a parent
     @cached_use_case
