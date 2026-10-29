@@ -1,3 +1,9 @@
+## v0.1.9 (2026-10-29)
+
+### Fix
+
+- order searh_by_label and search_by_result methods based on ontology input order
+
 ## v0.1.8 (2026-10-29)
 
 ### Fix
