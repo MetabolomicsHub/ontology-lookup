@@ -1,3 +1,9 @@
+## v0.2.0 (2026-10-29)
+
+### Feat
+
+- ontology term cross ref is stored in term_details
+
 ## v0.1.9 (2026-10-29)
 
 ### Fix
