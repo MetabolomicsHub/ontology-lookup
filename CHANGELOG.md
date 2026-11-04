@@ -1,3 +1,9 @@
+## v0.3.0 (2026-11-04)
+
+### Feat
+
+- ontology lookup fastapi router
+
 ## v0.2.2 (2026-11-04)
 
 ### Fix
