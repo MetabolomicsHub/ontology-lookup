@@ -43,9 +43,15 @@ def get_readonly_connection(
     db_uri = f"file:{abs_path}?mode=ro"
     conn = sqlite3.connect(db_uri, uri=True, check_same_thread=False)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA query_only = 1;")
-    conn.execute(f"PRAGMA mmap_size = {mmap_size};")
-    conn.execute(f"PRAGMA cache_size = {cache_size};")
+    try:
+        conn.execute("PRAGMA query_only = 1;")
+        conn.execute(f"PRAGMA mmap_size = {mmap_size};")
+        conn.execute(f"PRAGMA cache_size = {cache_size};")
+    except sqlite3.OperationalError as exc:
+        # Cache sizing is an optional, connection-local optimization. Some
+        # SQLite builds/filesystem combinations reject it on read-only handles.
+        if exc.sqlite_errorcode is None or exc.sqlite_errorcode & 0xFF != sqlite3.SQLITE_READONLY:
+            raise
     return conn
 
 

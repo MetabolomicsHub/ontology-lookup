@@ -102,7 +102,7 @@ def test_use_case_2_exact_label_match(client: TestClient) -> None:
     assert response.status_code == 200
     data: dict[str, Any] = response.json()
     assert data["curie"] == "MS:1000031"
-    assert data["ontology"] == "ms"
+    assert data["ontology"] == "MS"
 
     # Nonexistent label returns 404
     missing_response = client.get(
@@ -194,7 +194,7 @@ def test_ontologies_endpoint(client: TestClient) -> None:
     assert response.status_code == 200
     ontologies = response.json()
     assert len(ontologies) >= 1
-    ms = next(o for o in ontologies if o["ontology"] == "ms")
+    ms = next(o for o in ontologies if o["ontology"] == "MS")
     assert ms["prefix"] == "MS"
     assert ms["num_of_terms"] >= 5
     assert ms["num_of_obsoletes"] >= 1
@@ -291,7 +291,7 @@ def test_ontology_get_and_delete_endpoints(client: TestClient) -> None:
     res_get = client.get("/ontologies/ms")
     assert res_get.status_code == 200
     data = res_get.json()
-    assert data["ontology"] == "ms"
+    assert data["ontology"] == "MS"
     assert data["prefix"] == "MS"
 
     # GET nonexistent ontology -> 404

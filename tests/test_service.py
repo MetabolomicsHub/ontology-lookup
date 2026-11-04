@@ -72,7 +72,7 @@ def test_use_case_1_get_term_by_accession(service: OntologyLookupService) -> Non
     term1: None | TermResponse = service.get_term_by_accession("ms", "ms:1000031")
     assert term1 is not None
     assert term1.curie == "MS:1000031"
-    assert term1.ontology == "ms"
+    assert term1.ontology == "MS"
     assert term1.label == "instrument configuration"
     assert "instrument config" in term1.synonyms
     assert "MALDI instrument" in term1.synonyms
@@ -84,7 +84,7 @@ def test_use_case_1_get_term_by_accession(service: OntologyLookupService) -> Non
     )
     assert term2 is not None
     assert term2.curie == "MS:1000449"
-    assert term2.ontology == "ms"
+    assert term2.ontology == "MS"
     assert term2.label == "LTQ Orbitrap"
     assert "Orbitrap" in term2.synonyms
     assert "MS:1000031" in term2.children_of
@@ -105,7 +105,7 @@ def test_use_case_2_get_term_by_exact_label(service: OntologyLookupService) -> N
     term: None | TermResponse = service.get_term_by_exact_label("ms", "INSTRUMENT CONFIGURATION")
     assert term is not None
     assert term.curie == "MS:1000031"
-    assert term.ontology == "ms"
+    assert term.ontology == "MS"
 
     # Nonexistent label returns None
     missing = service.get_term_by_exact_label("ms", "Nonexistent Device")
@@ -203,7 +203,7 @@ def test_list_ontologies_and_database_info(service: OntologyLookupService) -> No
     """Verify list_ontologies and get_database_info return proper Pydantic models."""
     ontologies = service.list_ontologies()
     assert len(ontologies) >= 1
-    ms_ont = next(o for o in ontologies if o.ontology == "ms")
+    ms_ont = next(o for o in ontologies if o.ontology == "MS")
     assert isinstance(ms_ont, OntologyInfo)
     assert ms_ont.prefix == "MS"
     assert ms_ont.name == "Mass Spectrometry Controlled Vocabulary"
@@ -216,7 +216,7 @@ def test_list_ontologies_and_database_info(service: OntologyLookupService) -> No
 
     single_ont = service.get_ontology("ms")
     assert single_ont is not None
-    assert single_ont.ontology == "ms"
+    assert single_ont.ontology == "MS"
     assert single_ont.name == "Mass Spectrometry Controlled Vocabulary"
     assert single_ont.version == "4.2.2"
     assert single_ont.num_of_terms == 7
