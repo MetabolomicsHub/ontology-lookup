@@ -200,6 +200,12 @@ The EMBL-EBI Ontology Lookup Service (OLS4) distributes standardized JSON repres
 - **Direct Download URL**: [https://ftp.ebi.ac.uk/pub/databases/spot/ols/latest/ontology_jsons.tgz](https://ftp.ebi.ac.uk/pub/databases/spot/ols/latest/ontology_jsons.tgz)
 - **Default Local Location**: `.cache/ontology_jsons`
 
+SSSOM mapping files are published separately at
+[https://ftp.ebi.ac.uk/pub/databases/spot/ols/latest/sssom.tgz](https://ftp.ebi.ac.uk/pub/databases/spot/ols/latest/sssom.tgz)
+and are extracted to `.cache/sssom` by `prepare_input_folders`. The archive
+contains TSV mapping files used to add cross-reference (`xref`) details to
+terms after ontology JSON loading.
+
 ### 1. Download and Extract the Archive
 
 Prepare both the ontology JSON and SSSOM inputs from Python:
@@ -235,9 +241,9 @@ keyed by `ontology_jsons` and `sssom`, with `archive`, `directory`, `downloaded`
 and `extracted` fields. It updates the manager's default input paths after both
 archives succeed; it does not modify the database until a loading method is called.
 
-For manual ontology JSON downloading instead:
+For manual downloads instead, retrieve and extract both archives:
 
-Execute the following commands to download and unpack the ontology JSON files into the `.cache` directory:
+Execute the following commands to download and unpack both archives into the `.cache` directory:
 
 ```bash
 # 1. Create target download directory
@@ -246,9 +252,16 @@ mkdir -p .cache
 # 2. Download the compressed archive
 curl -L https://ftp.ebi.ac.uk/pub/databases/spot/ols/latest/ontology_jsons.tgz -o .cache/ontology_jsons.tgz
 
-# 3. Extract the archive into .cache/
+# 3. Download the SSSOM mapping archive
+curl -L https://ftp.ebi.ac.uk/pub/databases/spot/ols/latest/sssom.tgz -o .cache/sssom.tgz
+
+# 4. Extract both archives into .cache/
 tar -xzf .cache/ontology_jsons.tgz -C .cache/
+tar -xzf .cache/sssom.tgz -C .cache/
 ```
+
+This creates `.cache/ontology_jsons/` and `.cache/sssom/`. To build without
+SSSOM mappings, the ontology JSON archive alone is sufficient.
 
 After extraction, the `.cache/ontology_jsons/` directory will contain individual JSON files named by ontology short name:
 
@@ -466,6 +479,33 @@ results = create_database(
     source_dir=".cache/ontology_jsons",
     ontologies=["ms", "edam"],
     clean=True,
+)
+```
+
+`OntologyDatabaseManager.load_directory(source_dir=None, ontologies=None,
+target_parents=None, clean=False, skip_empty=True, sssom_dir=None)` loads
+ontology JSON files from a directory into the manager's SQLite database. If
+`source_dir` is omitted, it uses `default_input_dir`; if `ontologies` is omitted,
+it loads every `*.json` file in that directory. Pass a list of ontology names to
+select files by their filename stems (for example, `ms.json` is `ms`).
+The returned dictionary maps each loaded ontology name to its `terms` and
+`details` counts. The method builds a shared temporary native synonym index for
+the source directory, so synonyms from a term's native ontology can be used
+when importing selected ontologies. The index is temporary and is removed when
+the load finishes.
+
+Use `clean=True` to rebuild from a clean database, `target_parents` to select
+the parent CURIEs used for hierarchy links, and `skip_empty=False` to include
+ontologies with no loaded terms in the returned results. To import cross-reference
+tags in the same operation, pass `sssom_dir`; SSSOM files are loaded after all
+selected ontology JSONs. Otherwise, loading is JSON-only (unless the manager's
+default SSSOM directory exists, in which case it is used automatically).
+
+```python
+results = mgr.load_directory(
+    source_dir=".cache/ontology_jsons",
+    ontologies=["ms", "edam"],
+    sssom_dir=".cache/sssom",
 )
 ```
 
