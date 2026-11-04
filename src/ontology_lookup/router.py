@@ -34,7 +34,7 @@ if FASTAPI_INSTALLED:
             self.prefix = prefix
             self.tags = tags
             self.router = APIRouter(prefix=self.prefix, tags=self.tags)
-            self.service: OntologyLookupService = self.get_service()
+            self.service: OntologyLookupService = next(self.get_service())
 
             def _infer_ontology(acc: str) -> None | str:
                 clean = acc.strip()
